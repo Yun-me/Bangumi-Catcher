@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bangumi-catcher"
+version = "3.0.0"
+description = "Bangumi 用户动画收藏批量抓取与数据分析 —— 桌面 GUI 工具"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Bangumi Catcher Contributors" }]
+keywords = ["bangumi", "anime", "data-analysis", "gui"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "eval-type-backport>=0.2",
+    "diskcache>=5.6",
+    "pyyaml>=6.0",
+    "plotly>=5.14",
+    "jinja2>=3.1",
+    "kaleido>=0.2.1",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+bangumi-catcher = "bangumi_catcher.gui:main"
+
+[project.urls]
+Homepage = "https://github.com/your-username/bangumi-catcher"
+Repository = "https://github.com/your-username/bangumi-catcher"
+Issues = "https://github.com/your-username/bangumi-catcher/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bangumi_catcher*"]

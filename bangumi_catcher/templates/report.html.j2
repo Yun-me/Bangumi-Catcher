@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ report.username }} - Bangumi 收藏分析报告</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+    <style>
+        /* ================================================================
+           CSS Variables — Light / Dark
+           ================================================================ */
+        :root {
+            --bg: #f5f5f5;
+            --card-bg: #ffffff;
+            --text: #333;
+            --muted: #888;
+            --accent: #4CAF50;
+            --border: #e0e0e0;
+            --shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+            --header-gradient-1: #667eea;
+            --header-gradient-2: #764ba2;
+            --table-stripe: #fafafa;
+            --table-hover: #f0f0f0;
+            --stat-card-bg: #ffffff;
+        }
+
+        [data-theme="dark"] {
+            --bg: #1a1a2e;
+            --card-bg: #16213e;
+            --text: #e0e0e0;
+            --muted: #aaa;
+            --accent: #66bb6a;
+            --border: #2a2a4a;
+            --shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+            --header-gradient-1: #4a3f8f;
+            --header-gradient-2: #5a3d82;
+            --table-stripe: #1a1a3a;
+            --table-hover: #222244;
+            --stat-card-bg: #16213e;
+        }
+
+        /* ================================================================
+           Reset & Base
+           ================================================================ */
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+                         "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            transition: background 0.3s, color 0.3s;
+        }
+        .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+
+        /* ================================================================
+           Theme Toggle
+           ================================================================ */
+        .theme-toggle {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 1000;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+            width: 44px;
+            height: 44px;
+            cursor: pointer;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: var(--shadow);
+            transition: transform 0.2s;
+        }
+        .theme-toggle:hover { transform: scale(1.1); }
+
+        /* ================================================================
+           Header
+           ================================================================ */
+        header {
+            background: linear-gradient(135deg, var(--header-gradient-1) 0%, var(--header-gradient-2) 100%);
+            color: #fff;
+            padding: 40px 16px;
+            text-align: center;
+            border-radius: 12px;
+            margin-bottom: 24px;
+        }
+        header h1 { font-size: clamp(1.4rem, 3vw, 2rem); margin-bottom: 8px; }
+        header .subtitle { opacity: 0.85; font-size: 0.95rem; }
+
+        /* ================================================================
+           Stats Cards
+           ================================================================ */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--stat-card-bg);
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+            box-shadow: var(--shadow);
+            transition: background 0.3s;
+        }
+        .stat-card .value { font-size: 1.75rem; font-weight: 700; color: var(--accent); }
+        .stat-card .label { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
+
+        /* ================================================================
+           Sections
+           ================================================================ */
+        .section {
+            background: var(--card-bg);
+            border-radius: 10px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: var(--shadow);
+            transition: background 0.3s;
+        }
+        .section h2 {
+            font-size: 1.25rem;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid var(--accent);
+        }
+
+        /* ================================================================
+           Charts
+           ================================================================ */
+        .chart-img {
+            width: 100%;
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin: 12px 0;
+        }
+
+        /* ================================================================
+           Tables
+           ================================================================ */
+        .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.88rem;
+            min-width: 600px;
+        }
+        th, td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th { background: var(--table-stripe); font-weight: 600; color: var(--muted); white-space: nowrap; }
+        tr:hover { background: var(--table-hover); }
+        .rating-bar {
+            display: inline-block;
+            height: 8px;
+            border-radius: 4px;
+            background: #673AB7;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+
+        /* ================================================================
+           Footer
+           ================================================================ */
+        footer {
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+            padding: 24px 0 12px;
+        }
+        footer a { color: var(--accent); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+
+        /* ================================================================
+           Print Styles
+           ================================================================ */
+        @media print {
+            body { background: #fff; color: #000; font-size: 12px; }
+            .theme-toggle { display: none; }
+            .section { break-inside: avoid; box-shadow: none; border: 1px solid #ccc; }
+            header { background: #667eea !important; -webkit-print-color-adjust: exact; }
+            .chart-img { max-height: 400px; }
+            table { font-size: 10px; }
+        }
+
+        /* ================================================================
+           Responsive
+           ================================================================ */
+        @media (max-width: 768px) {
+            .container { padding: 12px 8px; }
+            .stats-row { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+            .stat-card { padding: 12px 8px; }
+            .stat-card .value { font-size: 1.3rem; }
+            .section { padding: 16px; }
+            header { padding: 24px 12px; }
+        }
+        @media (max-width: 480px) {
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+
+<button class="theme-toggle" onclick="toggleTheme()" title="切换暗色/亮色模式" aria-label="切换暗色模式">
+    🌓
+</button>
+
+<div class="container">
+
+<header>
+    <h1>📊 {{ report.username }} 的 Bangumi 收藏分析</h1>
+    <p class="subtitle">报告生成于 {{ report.generated_at[:19] }}</p>
+</header>
+
+<!-- 概览卡片 -->
+<div class="stats-row">
+    <div class="stat-card">
+        <div class="value">{{ report.total_items }}</div>
+        <div class="label">总收藏数</div>
+    </div>
+    {% for type_name, count in report.type_counts.items() %}
+    <div class="stat-card">
+        <div class="value">{{ count }}</div>
+        <div class="label">{{ type_name }}</div>
+    </div>
+    {% endfor %}
+    <div class="stat-card">
+        <div class="value">{{ report.overall_avg_rating }}</div>
+        <div class="label">平均评分</div>
+    </div>
+</div>
+
+<!-- 图表：年度趋势 -->
+<div class="section">
+    <h2>📈 年度收藏趋势</h2>
+    <img class="chart-img" src="{{ charts.yearly_trend }}" alt="年度趋势" loading="lazy">
+</div>
+
+<!-- 图表：评分分布 -->
+<div class="section">
+    <h2>⭐ 评分分布</h2>
+    <img class="chart-img" src="{{ charts.rating_distribution }}" alt="评分分布" loading="lazy">
+</div>
+
+<!-- 图表：收藏类型饼图 -->
+<div class="section">
+    <h2>🍩 收藏类型分布</h2>
+    <img class="chart-img" src="{{ charts.collection_pie }}" alt="收藏分布" loading="lazy">
+</div>
+
+<!-- 图表：最爱 Top -->
+<div class="section">
+    <h2>❤️ 最爱 Top {{ report.top_rated|length }}</h2>
+    <img class="chart-img" src="{{ charts.top_rated }}" alt="最爱排行" loading="lazy">
+</div>
+
+<!-- 高分排行表格 -->
+<div class="section">
+    <h2>🏆 高分作品排行</h2>
+    <div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>作品</th>
+                <th>年份</th>
+                <th>评分</th>
+                <th>Bangumi 均分</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in report.top_rated %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>
+                    {% if item.cover_url %}
+                    <img src="{{ item.cover_url }}" alt="" style="width:32px;height:44px;border-radius:4px;vertical-align:middle;margin-right:8px;object-fit:cover;" loading="lazy">
+                    {% endif %}
+                    {{ item.name_cn or item.name }}
+                </td>
+                <td>{{ item.year or "-" }}</td>
+                <td>
+                    <span class="rating-bar" style="width:{{ item.rate * 10 }}px;"></span>
+                    {{ item.rate }}
+                </td>
+                <td>{{ "%.1f"|format(item.bangumi_score) if item.bangumi_score > 0 else "-" }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<!-- 年度明细表格 -->
+<div class="section">
+    <h2>📅 年度明细</h2>
+    <div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>年份</th>
+                <th>总计</th>
+                <th>看过</th>
+                <th>在看</th>
+                <th>想看</th>
+                <th>搁置</th>
+                <th>抛弃</th>
+                <th>平均评分</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for d in report.year_trend %}
+            <tr>
+                <td>{{ d.year }}</td>
+                <td>{{ d.total }}</td>
+                <td>{{ d.finished }}</td>
+                <td>{{ d.watching }}</td>
+                <td>{{ d.wish }}</td>
+                <td>{{ d.on_hold }}</td>
+                <td>{{ d.dropped }}</td>
+                <td>{{ d.avg_rating }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<footer>
+    <p>由 <a href="https://github.com/your-username/bangumi-catcher">Bangumi Catcher</a> 生成 &middot;
+       数据来源 <a href="https://bgm.tv">Bangumi 番组计划</a></p>
+</footer>
+
+</div>
+
+<script>
+// 暗色/亮色模式切换
+(function() {
+    var stored = localStorage.getItem('bangumi-theme');
+    if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+    }
+})();
+
+function toggleTheme() {
+    var current = document.documentElement.getAttribute('data-theme');
+    var next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('bangumi-theme', next);
+}
+</script>
+
+</body>
+</html>

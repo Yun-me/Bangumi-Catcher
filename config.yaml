@@ -1,0 +1,23 @@
+# Bangumi Catcher 配置
+
+api:
+  base_url: "https://api.bgm.tv"
+  user_agent: "bangumi-catcher/3.0 (https://github.com/your-username/bangumi-catcher)"
+  timeout: 30
+  max_retries: 3
+  retry_delay: 1.0
+
+collection:
+  subject_type: 2
+  limit: 50
+  rate_limit_delay: 1.0
+
+analysis:
+  year_start: 2000
+  year_end: 2025
+  top_n: 20
+
+export:
+  output_dir: "output"
+  csv_encoding: "utf-8-sig"
+  json_indent: 2
