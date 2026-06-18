@@ -1,494 +1,592 @@
-"""Tkinter 桌面 GUI —— 一键抓取 · 分析 · 导出."""
+"""Bangumi Catcher —— PySide6 (Qt) 现代化桌面 GUI.
+
+设计要点：
+* 响应式布局：FlowLayout + Qt layout manager，窗口缩放/全屏自动重排，无裁剪、无挤角。
+* 实时图表：matplotlib FigureCanvasQTAgg 随窗口重绘，不再是固定尺寸 PNG。
+* 不卡死：抓取/分析在 QThread 后台执行，通过 Qt 信号回主线程。
+* 现代功能：亮/暗主题、可搜索可排序的收藏总表、设置持久化、一键导出 / 浏览器打开报告。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
-import os
-import sys
-import tempfile
 import threading
-import tkinter as tk
+import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 
-# 确保 bangumi_catcher 包可被导入 (PyInstaller / 直接运行均兼容)
-_PARENT = Path(__file__).resolve().parent.parent
-if str(_PARENT) not in sys.path:
-    sys.path.insert(0, str(_PARENT))
+import matplotlib
+matplotlib.use("QtAgg")
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from PySide6 import QtCore, QtGui, QtWidgets
 
-from PIL import Image, ImageTk
-
-from bangumi_catcher.analyzer import analyze
-from bangumi_catcher.api import BangumiClient
-from bangumi_catcher.config import load_config
-from bangumi_catcher.exceptions import BangumiError, EmptyCollectionError
-from bangumi_catcher.export import collection_to_csv, collection_to_json, report_to_json
-from bangumi_catcher.models import UserCollection, AnalysisReport
-from bangumi_catcher.reporter import generate_html
-from bangumi_catcher.visualizer import (
-    fig_yearly_trend,
-    fig_rating_distribution,
-    fig_collection_pie,
-    fig_top_rated,
-)
+from .analyzer import analyze
+from .api import BangumiClient
+from .config import load_config
+from .export import collection_to_csv, collection_to_json
+from .flowlayout import FlowLayout
+from .models import AnalysisReport, UserCollection
+from .theme import Palette, build_stylesheet
+from .visualizer import CHART_TITLES, build_figures, render_all
 
 logger = logging.getLogger(__name__)
 
-
-# ================================================================
-# 异步在线程中运行
-# ================================================================
-
-def _run_async(coro):
-    """在新线程中运行 asyncio，返回结果或抛出异常."""
-    result: list = []
-    error: list = []
-
-    def _target():
-        try:
-            result.append(asyncio.run(coro))
-        except Exception as e:
-            error.append(e)
-
-    t = threading.Thread(target=_target, daemon=True)
-    t.start()
-    t.join()
-
-    if error:
-        raise error[0]
-    return result[0]
+APP_NAME = "Bangumi Catcher"
+APP_VERSION = "1.1.0"
+TYPE_MAP = {"动画": 2, "书籍": 1, "音乐": 3, "游戏": 4, "三次元": 6}
 
 
-# ================================================================
-# 主窗口
-# ================================================================
+# ============================================================ 后台 worker
+class FetchWorker(QtCore.QObject):
+    progress = QtCore.Signal(float, str)
+    finished = QtCore.Signal(object, object)   # (UserCollection, AnalysisReport)
+    failed = QtCore.Signal(str)
 
-class BangumiApp:
-    """Bangumi Catcher Tkinter 应用."""
+    def __init__(self, username: str, subject_type: int, force_refresh: bool):
+        super().__init__()
+        self.username = username
+        self.subject_type = subject_type
+        self.force_refresh = force_refresh
+        self._cancel = threading.Event()
 
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Bangumi Catcher")
-        self.root.geometry("1100x750")
-        self.root.minsize(900, 600)
+    def cancel(self):
+        self._cancel.set()
 
-        # 数据
-        self.collection: UserCollection | None = None
-        self.report: AnalysisReport | None = None
-        self.chart_images: dict[str, ImageTk.PhotoImage] = {}
-
-        # 样式
-        self._setup_style()
-
-        # 布局
-        self._build_top_bar()
-        self._build_notebook()
-
-    # ------------------------------------------------------------
-    # 样式
-    # ------------------------------------------------------------
-
-    def _setup_style(self) -> None:
-        style = ttk.Style()
-        style.theme_use("clam")
-
-        bg = "#f0f0f0"
-        fg = "#333333"
-        accent = "#4CAF50"
-
-        style.configure("TFrame", background=bg)
-        style.configure("TLabel", background=bg, foreground=fg, font=("Microsoft YaHei", 10))
-        style.configure("TButton", font=("Microsoft YaHei", 10), padding=6)
-        style.configure("Accent.TButton", background=accent, foreground="white")
-        style.configure("TLabelframe", background=bg, foreground=fg)
-        style.configure("TLabelframe.Label", background=bg, foreground=fg, font=("Microsoft YaHei", 10, "bold"))
-        style.configure("TNotebook", background=bg)
-        style.configure("TNotebook.Tab", font=("Microsoft YaHei", 10), padding=[12, 4])
-        style.configure("TProgressbar", thickness=20)
-
-        self.root.configure(background=bg)
-
-    # ------------------------------------------------------------
-    # 顶栏
-    # ------------------------------------------------------------
-
-    def _build_top_bar(self) -> None:
-        frame = ttk.Frame(self.root, padding=10)
-        frame.pack(fill=tk.X)
-
-        ttk.Label(frame, text="Bangumi 用户 ID:", font=("Microsoft YaHei", 11)).pack(side=tk.LEFT, padx=(0, 8))
-
-        self.user_entry = ttk.Entry(frame, width=24, font=("Microsoft YaHei", 11))
-        self.user_entry.pack(side=tk.LEFT, padx=(0, 8))
-        self.user_entry.bind("<Return>", lambda e: self._on_fetch())
-
-        self.fetch_btn = ttk.Button(frame, text="开始抓取", command=self._on_fetch)
-        self.fetch_btn.pack(side=tk.LEFT, padx=(0, 16))
-
-        self.progress = ttk.Progressbar(frame, mode="indeterminate", length=200)
-        self.status_label = ttk.Label(frame, text="就绪", foreground="#888")
-
-    # ------------------------------------------------------------
-    # Notebook (Tab 页)
-    # ------------------------------------------------------------
-
-    def _build_notebook(self) -> None:
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-
-        # Tab 1: 概览
-        self.tab_overview = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_overview, text="📋 概览")
-
-        # Tab 2: 图表
-        self.tab_charts = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_charts, text="📈 图表")
-
-        # Tab 3: 排行
-        self.tab_ranking = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_ranking, text="🏆 排行")
-
-        # Tab 4: 年份
-        self.tab_years = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_years, text="📅 年度明细")
-
-        # 导出按钮 (底部)
-        btn_frame = ttk.Frame(self.root, padding=(10, 0, 10, 6))
-        btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="导出 CSV", command=self._export_csv).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="导出 JSON", command=self._export_json).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="导出 HTML 报告", command=self._export_html).pack(side=tk.LEFT, padx=4)
-
-    # ------------------------------------------------------------
-    # 抓取逻辑
-    # ------------------------------------------------------------
-
-    def _on_fetch(self) -> None:
-        username = self.user_entry.get().strip()
-        if not username:
-            messagebox.showwarning("提示", "请输入 Bangumi 用户 ID")
-            return
-
-        self.fetch_btn.config(state=tk.DISABLED)
-        self.progress.pack(side=tk.LEFT, padx=(8, 8))
-        self.progress.start()
-        self.status_label.config(text="正在抓取...")
-        self.status_label.pack(side=tk.LEFT)
-
-        # 在后台线程运行
-        threading.Thread(target=self._fetch_thread, args=(username,), daemon=True).start()
-
-    def _fetch_thread(self, username: str) -> None:
+    @QtCore.Slot()
+    def run(self):
         try:
             cfg = load_config()
-            collection, report = _run_async(self._do_fetch(cfg, username))
-            self.root.after(0, self._on_fetch_done, collection, report, None)
-        except Exception as e:
-            self.root.after(0, self._on_fetch_done, None, None, str(e))
+            a = cfg.get("analysis", {})
 
-    async def _do_fetch(self, cfg: dict, username: str):
-        async with BangumiClient(cfg) as client:
-            collection = await client.fetch_collection(username)
-        report = analyze(collection)
-        return collection, report
+            def progress(frac, msg):
+                if self._cancel.is_set():
+                    raise _Cancelled()
+                self.progress.emit(float(frac), str(msg))
 
-    def _on_fetch_done(
-        self, collection: UserCollection | None, report: AnalysisReport | None, error: str | None,
-    ) -> None:
-        self.progress.stop()
-        self.progress.pack_forget()
-        self.status_label.pack_forget()
-        self.fetch_btn.config(state=tk.NORMAL)
+            progress(0.02, "连接 Bangumi API …")
 
-        if error:
-            if "ConnectError" in error or "connect" in error.lower():
-                msg = f"网络连接失败，无法访问 Bangumi API。\n\n{error}\n\n请检查网络或尝试使用代理。"
-            elif "validation error" in error.lower():
-                msg = f"数据解析错误，可能是 API 返回格式变化。\n\n{error}"
-            elif "EmptyCollection" in error or "为空" in error:
-                msg = f"该用户收藏为空或设置了隐私保护。\n\n{error}"
-            else:
-                msg = error
-            messagebox.showerror("抓取失败", msg)
+            async def _fetch():
+                async with BangumiClient(cfg) as client:
+                    return await client.fetch_collection(
+                        self.username, subject_type=self.subject_type,
+                        force_refresh=self.force_refresh,
+                    )
+
+            collection = asyncio.run(_fetch())
+            progress(0.70, "分析数据 …")
+            report = analyze(
+                collection,
+                year_start=a.get("year_start", 2000),
+                year_end=a.get("year_end", 2025),
+                top_n=a.get("top_n", 20),
+            )
+            progress(1.0, "完成")
+            self.finished.emit(collection, report)
+        except _Cancelled:
+            self.failed.emit("已取消")
+        except Exception as e:  # noqa: BLE001
+            logger.exception("抓取失败")
+            self.failed.emit(str(e))
+
+
+class _Cancelled(Exception):
+    pass
+
+
+# ============================================================ 小组件
+class StatCard(QtWidgets.QFrame):
+    def __init__(self, value, label, color):
+        super().__init__()
+        self.setObjectName("StatCard")
+        self.setFixedSize(168, 96)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(2)
+        v = QtWidgets.QLabel(str(value))
+        v.setObjectName("StatValue")
+        v.setStyleSheet(f"color:{color};")
+        lbl = QtWidgets.QLabel(label)
+        lbl.setObjectName("StatLabel")
+        lay.addWidget(v)
+        lay.addWidget(lbl)
+        lay.addStretch()
+
+
+class ChartCard(QtWidgets.QFrame):
+    """图表卡片：标题 + 随窗口重绘的 matplotlib 画布。"""
+
+    def __init__(self, title, figure):
+        super().__init__()
+        self.setObjectName("ChartCard")
+        self.setMinimumWidth(440)
+        self.setMinimumHeight(340)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(6)
+        t = QtWidgets.QLabel(title)
+        t.setObjectName("ChartTitle")
+        lay.addWidget(t)
+        self.canvas = FigureCanvasQTAgg(figure)
+        self.canvas.setStyleSheet("background:transparent;")
+        lay.addWidget(self.canvas, 1)
+
+    def sizeHint(self):
+        return QtCore.QSize(520, 380)
+
+
+# ============================================================ 主窗口
+class MainWindow(QtWidgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.settings = QtCore.QSettings(APP_NAME, APP_NAME)
+        self.dark = self.settings.value("dark", False, type=bool)
+        self.collection: UserCollection | None = None
+        self.report: AnalysisReport | None = None
+        self._charts_uri: dict[str, str] = {}
+        self._thread: QtCore.QThread | None = None
+        self._worker: FetchWorker | None = None
+
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        self.resize(1240, 840)
+        self.setMinimumSize(900, 600)
+
+        self._build_menu()
+        self._build_ui()
+        self._apply_theme()
+        self._restore_state()
+
+    # -------------------------------------------------- 菜单
+    def _build_menu(self):
+        bar = self.menuBar()
+        m_file = bar.addMenu("文件")
+        self.act_csv = m_file.addAction("导出 CSV…", self._export_csv)
+        self.act_json = m_file.addAction("导出 JSON…", self._export_json)
+        self.act_html = m_file.addAction("导出 HTML 报告…", self._export_html)
+        self.act_csv.setShortcut("Ctrl+S")
+        m_file.addSeparator()
+        m_file.addAction("退出", self.close)
+
+        m_tools = bar.addMenu("工具")
+        m_tools.addAction("清除缓存", self._clear_cache)
+        self.act_theme = m_tools.addAction("切换 暗/亮 主题", self._toggle_theme)
+        self.act_theme.setShortcut("Ctrl+D")
+
+        m_help = bar.addMenu("帮助")
+        m_help.addAction("关于", self._about)
+
+        for a in (self.act_csv, self.act_json, self.act_html):
+            a.setEnabled(False)
+
+    # -------------------------------------------------- UI
+    def _build_ui(self):
+        root = QtWidgets.QWidget()
+        root.setObjectName("Root")
+        self.setCentralWidget(root)
+        outer = QtWidgets.QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ---- 顶部栏 ----
+        header = QtWidgets.QFrame()
+        header.setObjectName("Header")
+        header.setFixedHeight(76)
+        hl = QtWidgets.QHBoxLayout(header)
+        hl.setContentsMargins(24, 0, 24, 0)
+        hl.setSpacing(12)
+
+        title = QtWidgets.QLabel("🔍 Bangumi Catcher")
+        title.setObjectName("AppTitle")
+        hl.addWidget(title)
+        hl.addSpacing(18)
+
+        self.user_input = QtWidgets.QLineEdit()
+        self.user_input.setPlaceholderText("输入 Bangumi 用户 ID / 用户名")
+        self.user_input.setFixedWidth(240)
+        self.user_input.returnPressed.connect(self._on_fetch)
+        hl.addWidget(self.user_input)
+
+        self.type_combo = QtWidgets.QComboBox()
+        self.type_combo.addItems(list(TYPE_MAP.keys()))
+        self.type_combo.setFixedWidth(92)
+        hl.addWidget(self.type_combo)
+
+        self.refresh_check = QtWidgets.QCheckBox("强制刷新")
+        hl.addWidget(self.refresh_check)
+
+        self.fetch_btn = QtWidgets.QPushButton("开始抓取")
+        self.fetch_btn.setObjectName("Primary")
+        self.fetch_btn.clicked.connect(self._on_fetch)
+        hl.addWidget(self.fetch_btn)
+
+        self.cancel_btn = QtWidgets.QPushButton("取消")
+        self.cancel_btn.setObjectName("Ghost")
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        self.cancel_btn.setVisible(False)
+        hl.addWidget(self.cancel_btn)
+
+        hl.addStretch(1)   # 关键：把控件推向左侧，剩余空间留白而非挤压
+        outer.addWidget(header)
+
+        # ---- 标签页 ----
+        self.tabs = QtWidgets.QTabWidget()
+        outer.addWidget(self.tabs, 1)
+        self._build_tab_overview()
+        self._build_tab_charts()
+        self._build_tab_collection()
+        self._build_tab_ranking()
+        self._build_tab_years()
+        self._set_empty_state(True)
+
+        # ---- 状态栏 ----
+        sb = self.statusBar()
+        self.status_label = QtWidgets.QLabel("就绪")
+        self.status_label.setObjectName("Muted")
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setFixedWidth(220)
+        self.progress.setRange(0, 100)
+        self.progress.setVisible(False)
+        sb.addWidget(self.status_label, 1)
+        sb.addPermanentWidget(self.progress)
+
+    def _scroll_with_flow(self):
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QtWidgets.QWidget()
+        inner.setObjectName("FlowPage")
+        flow = FlowLayout(inner, margin=18, h_spacing=16, v_spacing=16)
+        scroll.setWidget(inner)
+        return scroll, flow
+
+    def _build_tab_overview(self):
+        self.overview_scroll, self.overview_flow = self._scroll_with_flow()
+        self.tabs.addTab(self.overview_scroll, "📋  概览")
+
+    def _build_tab_charts(self):
+        self.charts_scroll, self.charts_flow = self._scroll_with_flow()
+        self.tabs.addTab(self.charts_scroll, "📈  图表")
+
+    def _build_tab_collection(self):
+        page = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(page)
+        v.setContentsMargins(18, 14, 18, 14)
+        v.setSpacing(10)
+
+        bar = QtWidgets.QHBoxLayout()
+        self.search_box = QtWidgets.QLineEdit()
+        self.search_box.setObjectName("SearchBox")
+        self.search_box.setPlaceholderText("🔎 搜索作品名 / 标签 / 评价 …")
+        self.search_box.textChanged.connect(self._on_search)
+        bar.addWidget(self.search_box, 1)
+        self.count_label = QtWidgets.QLabel("")
+        self.count_label.setObjectName("Muted")
+        bar.addWidget(self.count_label)
+        v.addLayout(bar)
+
+        self.table = QtWidgets.QTableView()
+        self.table.setSortingEnabled(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.doubleClicked.connect(self._open_subject)
+        self.model = QtGui.QStandardItemModel()
+        self.proxy = QtCore.QSortFilterProxyModel()
+        self.proxy.setSourceModel(self.model)
+        self.proxy.setFilterKeyColumn(-1)
+        self.proxy.setFilterCaseSensitivity(QtCore.Qt.CaseInsensitive)
+        self.table.setModel(self.proxy)
+        v.addWidget(self.table, 1)
+        self.tabs.addTab(page, "📚  收藏总表")
+
+    def _build_tab_ranking(self):
+        self.ranking_table = QtWidgets.QTableWidget()
+        self.ranking_table.setAlternatingRowColors(True)
+        self.ranking_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.ranking_table.verticalHeader().setVisible(False)
+        wrap = QtWidgets.QWidget()
+        wl = QtWidgets.QVBoxLayout(wrap)
+        wl.setContentsMargins(18, 14, 18, 14)
+        wl.addWidget(self.ranking_table)
+        self.tabs.addTab(wrap, "🏆  排行")
+
+    def _build_tab_years(self):
+        self.years_table = QtWidgets.QTableWidget()
+        self.years_table.setAlternatingRowColors(True)
+        self.years_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.years_table.verticalHeader().setVisible(False)
+        wrap = QtWidgets.QWidget()
+        wl = QtWidgets.QVBoxLayout(wrap)
+        wl.setContentsMargins(18, 14, 18, 14)
+        wl.addWidget(self.years_table)
+        self.tabs.addTab(wrap, "📅  年度")
+
+    # -------------------------------------------------- 主题
+    def _apply_theme(self):
+        self.palette_ = Palette(self.dark)
+        QtWidgets.QApplication.instance().setStyleSheet(build_stylesheet(self.palette_))
+
+    def _toggle_theme(self):
+        self.dark = not self.dark
+        self.settings.setValue("dark", self.dark)
+        self._apply_theme()
+        if self.report is not None:
+            self._render_charts()   # 重建图表以适配主题
+
+    # -------------------------------------------------- 抓取流程
+    def _on_fetch(self):
+        username = self.user_input.text().strip()
+        if not username:
+            QtWidgets.QMessageBox.warning(self, "提示", "请输入 Bangumi 用户 ID")
             return
+        if self._thread and self._thread.isRunning():
+            return
+        self.settings.setValue("last_user", username)
+        subject_type = TYPE_MAP.get(self.type_combo.currentText(), 2)
 
+        self.fetch_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+
+        self._thread = QtCore.QThread()
+        self._worker = FetchWorker(username, subject_type, self.refresh_check.isChecked())
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_cancel(self):
+        if self._worker:
+            self._worker.cancel()
+            self.status_label.setText("正在取消 …")
+
+    @QtCore.Slot(float, str)
+    def _on_progress(self, frac, msg):
+        self.progress.setValue(int(frac * 100))
+        self.status_label.setText(msg)
+
+    @QtCore.Slot(object, object)
+    def _on_finished(self, collection, report):
         self.collection = collection
         self.report = report
+        self._reset_controls()
+        self.status_label.setText(
+            f"✓ {report.total_items} 条 · 均分 {report.overall_avg_rating} · "
+            f"完成率 {report.avg_completion}%")
+        for a in (self.act_csv, self.act_json, self.act_html):
+            a.setEnabled(True)
+        self._set_empty_state(False)
         self._render_overview()
         self._render_charts()
+        self._render_collection()
         self._render_ranking()
         self._render_years()
-        self.status_label.config(text=f"完成! {report.total_items} 条收藏", foreground="#4CAF50")
-        self.status_label.pack(side=tk.LEFT)
 
-    # ------------------------------------------------------------
-    # Tab 1: 概览
-    # ------------------------------------------------------------
+    @QtCore.Slot(str)
+    def _on_failed(self, msg):
+        self._reset_controls()
+        self.status_label.setText(f"失败：{msg}")
+        if msg != "已取消":
+            QtWidgets.QMessageBox.critical(self, "抓取失败", msg)
 
-    def _render_overview(self) -> None:
-        for w in self.tab_overview.winfo_children():
-            w.destroy()
+    def _reset_controls(self):
+        self.fetch_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
+        self.progress.setVisible(False)
+        self.progress.setValue(0)
 
+    # -------------------------------------------------- 渲染
+    def _clear_flow(self, flow):
+        while flow.count():
+            item = flow.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+
+    def _set_empty_state(self, empty: bool):
+        if empty and self.overview_flow.count() == 0:
+            tip = QtWidgets.QLabel("👋 输入用户 ID 后点击「开始抓取」")
+            tip.setObjectName("Empty")
+            self.overview_flow.addWidget(tip)
+
+    def _render_overview(self):
+        self._clear_flow(self.overview_flow)
         r = self.report
-        if r is None:
-            return
-
-        cards = ttk.Frame(self.tab_overview, padding=20)
-        cards.pack(fill=tk.X)
-
-        stats = [
-            ("总收藏", r.total_items),
-            ("平均评分", f"{r.overall_avg_rating:.1f}"),
-            ("覆盖年份", len(r.by_year)),
+        p = self.palette_
+        cards = [
+            ("总收藏", r.total_items, p.accent),
+            ("平均评分", f"{r.overall_avg_rating:.1f}", p.accent2),
+            ("完成率", f"{r.avg_completion:.0f}%", p.warning),
+            ("覆盖年份", len(r.by_year), p.accent),
         ]
-        for type_name, count in r.type_counts.items():
-            stats.append((type_name, count))
+        for tn, cnt in r.type_counts.items():
+            cards.append((tn, cnt, p.muted))
+        for label, val, color in cards:
+            self.overview_flow.addWidget(StatCard(val, label, color))
 
-        for i, (label, value) in enumerate(stats):
-            card = ttk.LabelFrame(cards, text=label)
-            card.grid(row=i // 4, column=i % 4, padx=8, pady=8, sticky="nsew")
-            val = ttk.Label(card, text=str(value), font=("Microsoft YaHei", 24, "bold"), foreground="#4CAF50")
-            val.pack(padx=24, pady=16)
+    def _render_charts(self):
+        self._clear_flow(self.charts_flow)
+        figs = build_figures(self.report)
+        self._figs = figs  # keep refs alive
+        for key, title in CHART_TITLES.items():
+            if key in figs:
+                self.charts_flow.addWidget(ChartCard(title, figs[key]))
 
-        for col in range(4):
-            cards.columnconfigure(col, weight=1)
+    def _render_collection(self):
+        self.model.clear()
+        headers = ["作品", "年份", "状态", "我的评分", "全站均分", "进度", "标签"]
+        self.model.setHorizontalHeaderLabels(headers)
+        for it in self.collection.items:
+            name = QtGui.QStandardItem(it.subject_name)
+            year = QtGui.QStandardItem()
+            year.setData(it.subject_year or 0, QtCore.Qt.DisplayRole)
+            year.setTextAlignment(QtCore.Qt.AlignCenter)
+            status = QtGui.QStandardItem(it.collection_type_name)
+            status.setTextAlignment(QtCore.Qt.AlignCenter)
+            myrate = QtGui.QStandardItem()
+            myrate.setData(it.rate or 0, QtCore.Qt.DisplayRole)
+            myrate.setTextAlignment(QtCore.Qt.AlignCenter)
+            bgm = QtGui.QStandardItem()
+            bgm.setData(round(it.subject_score, 1), QtCore.Qt.DisplayRole)
+            bgm.setTextAlignment(QtCore.Qt.AlignCenter)
+            prog = QtGui.QStandardItem(f"{it.completion_rate*100:.0f}%" if it.completion_rate else "-")
+            prog.setTextAlignment(QtCore.Qt.AlignCenter)
+            tags = QtGui.QStandardItem("、".join(it.tags[:5]))
+            self.model.appendRow([name, year, status, myrate, bgm, prog, tags])
+        self.table.setColumnWidth(0, 360)
+        for c in range(1, 6):
+            self.table.setColumnWidth(c, 90)
+        self.count_label.setText(f"共 {self.model.rowCount()} 条")
 
-        # 评分分布
-        if r.rating_distribution:
-            dist_frame = ttk.LabelFrame(self.tab_overview, text="评分分布", padding=10)
-            dist_frame.pack(fill=tk.X, padx=20, pady=10)
-            text = "  ".join(f"{k}分×{v}" for k, v in sorted(r.rating_distribution.items()))
-            ttk.Label(dist_frame, text=text, font=("Consolas", 10)).pack()
+    def _on_search(self, text):
+        self.proxy.setFilterFixedString(text)
+        self.count_label.setText(f"匹配 {self.proxy.rowCount()} / {self.model.rowCount()} 条")
 
-    # ------------------------------------------------------------
-    # Tab 2: 图表
-    # ------------------------------------------------------------
+    def _open_subject(self, index):
+        row = self.proxy.mapToSource(index).row()
+        if 0 <= row < len(self.collection.items):
+            sid = self.collection.items[row].subject_id
+            webbrowser.open(f"https://bgm.tv/subject/{sid}")
 
-    def _render_charts(self) -> None:
-        for w in self.tab_charts.winfo_children():
-            w.destroy()
-
+    def _render_ranking(self):
         r = self.report
-        if r is None:
-            return
+        cols = ["#", "作品", "年份", "我的评分", "全站均分"]
+        self.ranking_table.setColumnCount(len(cols))
+        self.ranking_table.setHorizontalHeaderLabels(cols)
+        self.ranking_table.setRowCount(len(r.top_rated))
+        for i, it in enumerate(r.top_rated):
+            vals = [str(i + 1), it.name_cn or it.name, str(it.year or "-"),
+                    str(it.rate), f"{it.bangumi_score:.1f}" if it.bangumi_score else "-"]
+            for c, val in enumerate(vals):
+                cell = QtWidgets.QTableWidgetItem(val)
+                if c != 1:
+                    cell.setTextAlignment(QtCore.Qt.AlignCenter)
+                self.ranking_table.setItem(i, c, cell)
+        self.ranking_table.horizontalHeader().setStretchLastSection(True)
+        self.ranking_table.setColumnWidth(1, 460)
 
-        self.chart_images.clear()
-
-        # 外框 — 填满 tab
-        outer = ttk.Frame(self.tab_charts)
-        outer.pack(fill=tk.BOTH, expand=True)
-
-        # Canvas + 双向滚动条
-        canvas = tk.Canvas(outer, bg="#f0f0f0", highlightthickness=0)
-        v_scroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
-        h_scroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
-
-        scroll_frame = ttk.Frame(canvas)
-        scroll_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-
-        win_id = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-
-        # 布局: canvas 填满, 滚动条贴边
-        canvas.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
-        outer.rowconfigure(0, weight=1)
-        outer.columnconfigure(0, weight=1)
-
-        # 鼠标滚轮 — 仅作用于 canvas 区域
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        def _on_shift_mousewheel(event):
-            canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
-        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
-        canvas.bind("<Shift-MouseWheel>", _on_shift_mousewheel, add="+")
-
-        # 让内框宽度跟随 canvas 可见宽度
-        def _sync_width(event):
-            canvas.itemconfig(win_id, width=event.width)
-        canvas.bind("<Configure>", _sync_width, add="+")
-
-        # 生成图表 — 宽度自适应
-        canvas.update_idletasks()
-        chart_width = max(canvas.winfo_width() - 40, 400)
-
-        charts = [
-            ("年度收藏趋势", fig_yearly_trend),
-            ("评分分布", fig_rating_distribution),
-            ("收藏类型分布", fig_collection_pie),
-            ("最爱排行", fig_top_rated),
-        ]
-
-        for title, fig_fn in charts:
-            try:
-                fig = fig_fn(r)
-                fig.update_layout(width=chart_width, height=chart_width * 9 // 16)
-                buf = io.BytesIO()
-                fig.write_image(buf, format="png", scale=1.5)
-                buf.seek(0)
-
-                img = Image.open(buf)
-                photo = ImageTk.PhotoImage(img)
-                self.chart_images[title] = photo
-
-                section = ttk.LabelFrame(scroll_frame, text=title, padding=8)
-                section.pack(fill=tk.X, padx=12, pady=6)
-                ttk.Label(section, image=photo).pack()
-            except Exception as e:
-                section = ttk.LabelFrame(scroll_frame, text=title, padding=8)
-                section.pack(fill=tk.X, padx=12, pady=6)
-                ttk.Label(section, text=f"图表生成失败: {e}", foreground="red").pack()
-
-    # ------------------------------------------------------------
-    # Tab 3: 排行
-    # ------------------------------------------------------------
-
-    def _render_ranking(self) -> None:
-        for w in self.tab_ranking.winfo_children():
-            w.destroy()
-
+    def _render_years(self):
         r = self.report
-        if r is None or not r.top_rated:
-            ttk.Label(self.tab_ranking, text="暂无排行数据", padding=30).pack()
+        cols = ["年份", "总计", "看过", "在看", "想看", "搁置", "抛弃", "均分"]
+        self.years_table.setColumnCount(len(cols))
+        self.years_table.setHorizontalHeaderLabels(cols)
+        self.years_table.setRowCount(len(r.year_trend))
+        for i, d in enumerate(r.year_trend):
+            vals = [d.year, d.total, d.finished, d.watching, d.wish, d.on_hold, d.dropped,
+                    f"{d.avg_rating:.1f}"]
+            for c, val in enumerate(vals):
+                cell = QtWidgets.QTableWidgetItem(str(val))
+                cell.setTextAlignment(QtCore.Qt.AlignCenter)
+                self.years_table.setItem(i, c, cell)
+        self.years_table.horizontalHeader().setStretchLastSection(True)
+
+    # -------------------------------------------------- 导出
+    def _export_csv(self):
+        if not self.collection:
             return
+        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出 CSV", "collection.csv", "CSV (*.csv)")
+        if p:
+            collection_to_csv(self.collection, p)
+            self.status_label.setText(f"已导出 CSV：{p}")
 
-        tree = ttk.Treeview(
-            self.tab_ranking,
-            columns=("rank", "name", "year", "rate", "bgm"),
-            show="headings",
-            height=20,
-        )
-        tree.heading("rank", text="#")
-        tree.heading("name", text="作品")
-        tree.heading("year", text="年份")
-        tree.heading("rate", text="评分")
-        tree.heading("bgm", text="Bangumi 均分")
-
-        tree.column("rank", width=40, anchor=tk.CENTER)
-        tree.column("name", width=400)
-        tree.column("year", width=60, anchor=tk.CENTER)
-        tree.column("rate", width=60, anchor=tk.CENTER)
-        tree.column("bgm", width=100, anchor=tk.CENTER)
-
-        scrollbar = ttk.Scrollbar(self.tab_ranking, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-
-        for i, item in enumerate(r.top_rated, 1):
-            tree.insert("", tk.END, values=(
-                i,
-                item.name_cn or item.name,
-                item.year or "-",
-                item.rate,
-                f"{item.bangumi_score:.1f}" if item.bangumi_score > 0 else "-",
-            ))
-
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
-
-    # ------------------------------------------------------------
-    # Tab 4: 年度明细
-    # ------------------------------------------------------------
-
-    def _render_years(self) -> None:
-        for w in self.tab_years.winfo_children():
-            w.destroy()
-
-        r = self.report
-        if r is None or not r.year_trend:
-            ttk.Label(self.tab_years, text="暂无年度数据", padding=30).pack()
+    def _export_json(self):
+        if not self.collection:
             return
+        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出 JSON", "collection.json", "JSON (*.json)")
+        if p:
+            collection_to_json(self.collection, p)
+            self.status_label.setText(f"已导出 JSON：{p}")
 
-        tree = ttk.Treeview(
-            self.tab_years,
-            columns=("year", "total", "finished", "watching", "wish", "hold", "drop", "avg"),
-            show="headings",
-            height=20,
-        )
-
-        for col, text, width in [
-            ("year", "年份", 60), ("total", "总计", 60),
-            ("finished", "看过", 60), ("watching", "在看", 60),
-            ("wish", "想看", 60), ("hold", "搁置", 60),
-            ("drop", "抛弃", 60), ("avg", "均分", 60),
-        ]:
-            tree.heading(col, text=text)
-            tree.column(col, width=width, anchor=tk.CENTER)
-
-        scrollbar = ttk.Scrollbar(self.tab_years, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-
-        for d in r.year_trend:
-            tree.insert("", tk.END, values=(
-                d.year, d.total, d.finished, d.watching,
-                d.wish, d.on_hold, d.dropped, f"{d.avg_rating:.1f}",
-            ))
-
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
-
-    # ------------------------------------------------------------
-    # 导出
-    # ------------------------------------------------------------
-
-    def _export_csv(self) -> None:
-        if self.collection is None:
+    def _export_html(self):
+        if not self.report:
             return
-        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
-        if path:
-            collection_to_csv(self.collection, path)
-            messagebox.showinfo("导出完成", f"已保存到:\n{path}")
-
-    def _export_json(self) -> None:
-        if self.collection is None:
+        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出 HTML 报告", "report.html", "HTML (*.html)")
+        if not p:
             return
-        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
-        if path:
-            collection_to_json(self.collection, path)
-            messagebox.showinfo("导出完成", f"已保存到:\n{path}")
+        from jinja2 import Environment, FileSystemLoader
+        if not self._charts_uri:
+            self._charts_uri = render_all(self.report)
+        env = Environment(
+            loader=FileSystemLoader(str(Path(__file__).resolve().parent / "templates")),
+            autoescape=True)
+        html = env.get_template("report.html.j2").render(report=self.report, charts=self._charts_uri)
+        Path(p).write_text(html, encoding="utf-8")
+        self.status_label.setText(f"已导出 HTML：{p}")
+        if QtWidgets.QMessageBox.question(
+                self, "导出完成", "HTML 报告已保存，是否在浏览器中打开？") == \
+                QtWidgets.QMessageBox.Yes:
+            webbrowser.open(Path(p).resolve().as_uri())
 
-    def _export_html(self) -> None:
-        if self.collection is None or self.report is None:
-            return
-        path = filedialog.asksaveasfilename(defaultextension=".html", filetypes=[("HTML", "*.html")])
-        if not path:
-            return
+    def _clear_cache(self):
+        from .cache import Cache
+        c = Cache()
+        c.clear()
+        c.close()
+        self.status_label.setText("缓存已清空")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            charts_dir = Path(tmpdir) / "charts"
-            charts_dir.mkdir()
-            chart_paths: dict[str, str] = {}
-            for name, fig_fn in [
-                ("yearly_trend", fig_yearly_trend),
-                ("rating_distribution", fig_rating_distribution),
-                ("collection_pie", fig_collection_pie),
-                ("top_rated", fig_top_rated),
-            ]:
-                fig = fig_fn(self.report)
-                p = str(charts_dir / f"{name}.png")
-                fig.write_image(p, format="png", scale=2)
-                chart_paths[name] = p
-            generate_html(self.report, chart_paths, path)
-        messagebox.showinfo("导出完成", f"HTML 报告已保存到:\n{path}")
+    def _about(self):
+        QtWidgets.QMessageBox.about(
+            self, "关于 Bangumi Catcher",
+            f"<b>{APP_NAME}</b> v{APP_VERSION}<br><br>"
+            "Bangumi 用户收藏抓取与可视化分析工具<br>"
+            "PySide6 · matplotlib · httpx · pydantic<br><br>"
+            "数据来源：<a href='https://bgm.tv'>Bangumi 番组计划</a>")
+
+    # -------------------------------------------------- 状态持久化
+    def _restore_state(self):
+        last = self.settings.value("last_user", "", type=str)
+        if last:
+            self.user_input.setText(last)
+        geo = self.settings.value("geometry")
+        if geo is not None:
+            self.restoreGeometry(geo)
+
+    def closeEvent(self, event):
+        self.settings.setValue("geometry", self.saveGeometry())
+        if self._thread and self._thread.isRunning():
+            if self._worker:
+                self._worker.cancel()
+            self._thread.quit()
+            self._thread.wait(2000)
+        super().closeEvent(event)
 
 
-# ================================================================
-# 入口
-# ================================================================
-
-def main() -> None:
-    """启动 Tkinter GUI."""
-    root = tk.Tk()
-    BangumiApp(root)
-    root.mainloop()
+def main():
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
+        QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app.setApplicationName(APP_NAME)
+    win = MainWindow()
+    win.show()
+    app.exec()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 import httpx
@@ -214,9 +213,9 @@ class BangumiClient:
             raw_items.extend(data_list)
             logger.info("  第 %d 页: +%d 条, 累计 %d/%d", offset // limit + 1, len(data_list), len(raw_items), total)
 
-            if offset + limit >= total or not data_list:
+            if not data_list or len(raw_items) >= total:
                 break
-            offset += limit
+            offset += len(data_list)
             await asyncio.sleep(self.rate_limit_delay)
 
         if not raw_items:

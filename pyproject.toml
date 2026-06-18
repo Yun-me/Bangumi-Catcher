@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bangumi-catcher"
-version = "3.0.0"
+version = "1.1.0"
 description = "Bangumi 用户动画收藏批量抓取与数据分析 —— 桌面 GUI 工具"
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,19 +27,22 @@ dependencies = [
     "eval-type-backport>=0.2",
     "diskcache>=5.6",
     "pyyaml>=6.0",
-    "plotly>=5.14",
+    "matplotlib>=3.7",
     "jinja2>=3.1",
-    "kaleido>=0.2.1",
-    "pillow>=10.0",
+    "PySide6>=6.6",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-qt>=4", "ruff>=0.5", "pyinstaller>=6"]
 
 [project.scripts]
 bangumi-catcher = "bangumi_catcher.gui:main"
+bangumi-catcher-gui = "bangumi_catcher.gui:main"
 
 [project.urls]
-Homepage = "https://github.com/your-username/bangumi-catcher"
-Repository = "https://github.com/your-username/bangumi-catcher"
-Issues = "https://github.com/your-username/bangumi-catcher/issues"
+Homepage = "https://github.com/Yun-me/Bangumi-Catcher"
+Repository = "https://github.com/Yun-me/Bangumi-Catcher"
+Issues = "https://github.com/Yun-me/Bangumi-Catcher/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

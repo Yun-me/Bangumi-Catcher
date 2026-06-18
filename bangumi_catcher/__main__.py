@@ -1,5 +1,6 @@
-"""python -m bangumi_catcher 入口 —— 启动 Tkinter GUI."""
+"""python -m bangumi_catcher → 启动 GUI (绝对导入，兼容 PyInstaller)。"""
 
-from .gui import main
+from bangumi_catcher.gui import main
 
-main()
+if __name__ == "__main__":
+    main()
