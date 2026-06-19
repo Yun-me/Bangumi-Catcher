@@ -1,16 +1,24 @@
-# Bangumi Catcher 配置
+# Bangumi Catcher 配置（可选）
+# 默认值已内嵌于程序，本文件仅用于覆盖；删掉本文件也能正常运行。
 
 api:
   base_url: "https://api.bgm.tv"
-  user_agent: "bangumi-catcher/3.0 (https://github.com/your-username/bangumi-catcher)"
-  timeout: 30
-  max_retries: 3
-  retry_delay: 1.0
+  user_agent: "bangumi-catcher (https://github.com/Yun-me/Bangumi-Catcher)"
+  timeout: 30          # 单请求超时（秒）
+  max_retries: 3       # 网络/5xx/429 的最大重试次数
+  retry_delay: 1.0     # 重试基础退避（秒，随次数递增）
 
 collection:
-  subject_type: 2
-  limit: 50
-  rate_limit_delay: 1.0
+  subject_type: 2      # 1=书籍 2=动画 3=音乐 4=游戏 6=三次元
+  limit: 50            # 每页条数（上限 50）
+  max_concurrent: 8    # 并发请求上限（网络差/易被限流可调小）
+  rate_limit_delay: 0.0  # 请求最小发起间隔（秒）。0=不额外限速，仅受 max_concurrent 约束；
+                         # 若遇到 429 限流，可调到 0.2~0.5 放慢请求频率。
+
+cache:
+  enabled: true        # 关闭后每次都重新抓取
+  ttl: 3600            # 收藏数据缓存有效期（秒）
+  dir: ""              # 缓存目录；留空 = ~/.cache/bangumi-catcher
 
 analysis:
   year_start: 2000
@@ -19,5 +27,5 @@ analysis:
 
 export:
   output_dir: "output"
-  csv_encoding: "utf-8-sig"
+  csv_encoding: "utf-8-sig"  # 带 BOM，Excel 直接打开不乱码
   json_indent: 2

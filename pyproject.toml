@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bangumi-catcher"
-version = "1.1.0"
+version = "1.2.2"
 description = "Bangumi 用户动画收藏批量抓取与数据分析 —— 桌面 GUI 工具"
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,3 +47,18 @@ Issues = "https://github.com/Yun-me/Bangumi-Catcher/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bangumi_catcher*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501"]  # 行宽交给 line-length 软约束，长字符串/URL 不强行换行
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

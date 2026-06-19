@@ -81,22 +81,32 @@ class Cache:
     # ---- 领域方法 ----
 
     @staticmethod
-    def collection_key(username: str, subject_type: int) -> str:
-        """用户收藏缓存键."""
-        return f"collection:{username}:st{subject_type}"
+    def collection_key(username: str, subject_type: int, collection_type: int | None = None) -> str:
+        """用户收藏缓存键（含收藏类型过滤，避免「全部」与「仅想看」等结果互相覆盖）."""
+        ct = "all" if collection_type is None else f"ct{collection_type}"
+        return f"collection:{username}:st{subject_type}:{ct}"
 
     @staticmethod
     def subject_key(subject_id: int) -> str:
         """条目详情缓存键."""
         return f"subject:{subject_id}"
 
-    def get_collection(self, username: str, subject_type: int) -> Any | None:
+    def get_collection(
+        self, username: str, subject_type: int, collection_type: int | None = None
+    ) -> Any | None:
         """读取用户收藏缓存."""
-        return self.get(self.collection_key(username, subject_type))
+        return self.get(self.collection_key(username, subject_type, collection_type))
 
-    def set_collection(self, username: str, subject_type: int, data: Any, ttl: int = DEFAULT_TTL) -> None:
+    def set_collection(
+        self,
+        username: str,
+        subject_type: int,
+        data: Any,
+        collection_type: int | None = None,
+        ttl: int = DEFAULT_TTL,
+    ) -> None:
         """写入用户收藏缓存."""
-        self.set(self.collection_key(username, subject_type), data, ttl=ttl)
+        self.set(self.collection_key(username, subject_type, collection_type), data, ttl=ttl)
 
     def get_subject(self, subject_id: int) -> Any | None:
         """读取条目详情缓存."""

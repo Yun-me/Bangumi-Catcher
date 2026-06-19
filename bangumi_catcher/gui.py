@@ -32,7 +32,7 @@ from .visualizer import CHART_TITLES, build_figures, render_all
 logger = logging.getLogger(__name__)
 
 APP_NAME = "Bangumi Catcher"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.2"
 TYPE_MAP = {"动画": 2, "书籍": 1, "音乐": 3, "游戏": 4, "三次元": 6}
 
 
@@ -59,21 +59,28 @@ class FetchWorker(QtCore.QObject):
             a = cfg.get("analysis", {})
 
             def progress(frac, msg):
+                # 取消信号在此检查：抛出异常即可中断 asyncio.run 内的抓取。
                 if self._cancel.is_set():
                     raise _Cancelled()
                 self.progress.emit(float(frac), str(msg))
 
             progress(0.02, "连接 Bangumi API …")
 
+            # 把抓取自身的 0-1 进度映射到整体进度的 2%–70% 区间，
+            # 余下 70%–100% 留给本地分析，进度条因此全程平滑推进。
+            def fetch_progress(frac, msg):
+                progress(0.02 + 0.68 * frac, msg)
+
             async def _fetch():
                 async with BangumiClient(cfg) as client:
                     return await client.fetch_collection(
                         self.username, subject_type=self.subject_type,
                         force_refresh=self.force_refresh,
+                        progress=fetch_progress,
                     )
 
             collection = asyncio.run(_fetch())
-            progress(0.70, "分析数据 …")
+            progress(0.72, "分析数据 …")
             report = analyze(
                 collection,
                 year_start=a.get("year_start", 2000),
@@ -94,22 +101,53 @@ class _Cancelled(Exception):
 
 
 # ============================================================ 小组件
+def _soft_shadow(widget, blur=18, dy=2, alpha=28):
+    """给卡片加一层极浅阴影，替代生硬描边来区分层级。"""
+    eff = QtWidgets.QGraphicsDropShadowEffect(widget)
+    eff.setBlurRadius(blur)
+    eff.setXOffset(0)
+    eff.setYOffset(dy)
+    eff.setColor(QtGui.QColor(15, 23, 42, alpha))
+    widget.setGraphicsEffect(eff)
+
+
+def _progress_label(item) -> str:
+    """收藏条目的「进度」展示文本。
+
+    把此前只显示完成百分比（且常年为 0）改为直接呈现「已看 / 总集数」，
+    让 ep_status 真正可见：
+      * 看过 → 「看完 · 全 N 话」/「看完」
+      * 在看 / 搁置 / 抛弃且有进度 → 「已看/总集」或「看到第 N 话」
+      * 想看 / 无进度 → 「—」
+    """
+    total = item.subject.episodes_total if item.subject else 0
+    if item.type == 2:           # 看过
+        return f"看完 · 全 {total} 话" if total else "看完"
+    if item.type == 1:           # 想看
+        return "—"
+    if item.ep_status > 0:       # 在看 / 搁置 / 抛弃，有进度
+        return f"{item.ep_status}/{total}" if total else f"看到第 {item.ep_status} 话"
+    return f"0/{total}" if total else "—"
+
+
 class StatCard(QtWidgets.QFrame):
-    def __init__(self, value, label, color):
+    """概览数字卡片：靠字号/字重而非颜色区分主次。"""
+
+    def __init__(self, value, label):
         super().__init__()
         self.setObjectName("StatCard")
-        self.setFixedSize(168, 96)
+        self.setFixedSize(176, 92)
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(2)
         v = QtWidgets.QLabel(str(value))
         v.setObjectName("StatValue")
-        v.setStyleSheet(f"color:{color};")
         lbl = QtWidgets.QLabel(label)
         lbl.setObjectName("StatLabel")
         lay.addWidget(v)
         lay.addWidget(lbl)
         lay.addStretch()
+        _soft_shadow(self)
 
 
 class ChartCard(QtWidgets.QFrame):
@@ -121,17 +159,43 @@ class ChartCard(QtWidgets.QFrame):
         self.setMinimumWidth(440)
         self.setMinimumHeight(340)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(6)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
         t = QtWidgets.QLabel(title)
         t.setObjectName("ChartTitle")
         lay.addWidget(t)
         self.canvas = FigureCanvasQTAgg(figure)
         self.canvas.setStyleSheet("background:transparent;")
         lay.addWidget(self.canvas, 1)
+        _soft_shadow(self)
 
     def sizeHint(self):
         return QtCore.QSize(520, 380)
+
+
+# ============================================================ 搜索过滤
+class _SearchProxy(QtCore.QSortFilterProxyModel):
+    """跨「作品名 / 标签 / 短评」的不区分大小写过滤。
+
+    可搜索文本（名称 + 标签 + 短评）预先拼好存在第 0 列的 UserRole 里，
+    过滤时只比对这一份：既覆盖了未显示为列的短评，也避免逐列取值。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._needle = ""
+
+    def set_needle(self, text: str) -> None:
+        self._needle = (text or "").strip().lower()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):  # noqa: N802 (Qt 命名)
+        if not self._needle:
+            return True
+        model = self.sourceModel()
+        idx = model.index(source_row, 0, source_parent)
+        haystack = model.data(idx, QtCore.Qt.UserRole) or ""
+        return self._needle in haystack.lower()
 
 
 # ============================================================ 主窗口
@@ -194,7 +258,7 @@ class MainWindow(QtWidgets.QMainWindow):
         hl.setContentsMargins(24, 0, 24, 0)
         hl.setSpacing(12)
 
-        title = QtWidgets.QLabel("🔍 Bangumi Catcher")
+        title = QtWidgets.QLabel("Bangumi Catcher")
         title.setObjectName("AppTitle")
         hl.addWidget(title)
         hl.addSpacing(18)
@@ -259,11 +323,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_tab_overview(self):
         self.overview_scroll, self.overview_flow = self._scroll_with_flow()
-        self.tabs.addTab(self.overview_scroll, "📋  概览")
+        self.tabs.addTab(self.overview_scroll, "概览")
 
     def _build_tab_charts(self):
         self.charts_scroll, self.charts_flow = self._scroll_with_flow()
-        self.tabs.addTab(self.charts_scroll, "📈  图表")
+        self.tabs.addTab(self.charts_scroll, "图表")
 
     def _build_tab_collection(self):
         page = QtWidgets.QWidget()
@@ -274,7 +338,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bar = QtWidgets.QHBoxLayout()
         self.search_box = QtWidgets.QLineEdit()
         self.search_box.setObjectName("SearchBox")
-        self.search_box.setPlaceholderText("🔎 搜索作品名 / 标签 / 评价 …")
+        self.search_box.setPlaceholderText("搜索作品名 / 标签 / 评价")
         self.search_box.textChanged.connect(self._on_search)
         bar.addWidget(self.search_box, 1)
         self.count_label = QtWidgets.QLabel("")
@@ -291,13 +355,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.doubleClicked.connect(self._open_subject)
         self.model = QtGui.QStandardItemModel()
-        self.proxy = QtCore.QSortFilterProxyModel()
+        self.proxy = _SearchProxy(self)
         self.proxy.setSourceModel(self.model)
-        self.proxy.setFilterKeyColumn(-1)
-        self.proxy.setFilterCaseSensitivity(QtCore.Qt.CaseInsensitive)
         self.table.setModel(self.proxy)
         v.addWidget(self.table, 1)
-        self.tabs.addTab(page, "📚  收藏总表")
+        self.tabs.addTab(page, "收藏总表")
 
     def _build_tab_ranking(self):
         self.ranking_table = QtWidgets.QTableWidget()
@@ -308,7 +370,7 @@ class MainWindow(QtWidgets.QMainWindow):
         wl = QtWidgets.QVBoxLayout(wrap)
         wl.setContentsMargins(18, 14, 18, 14)
         wl.addWidget(self.ranking_table)
-        self.tabs.addTab(wrap, "🏆  排行")
+        self.tabs.addTab(wrap, "排行")
 
     def _build_tab_years(self):
         self.years_table = QtWidgets.QTableWidget()
@@ -319,7 +381,7 @@ class MainWindow(QtWidgets.QMainWindow):
         wl = QtWidgets.QVBoxLayout(wrap)
         wl.setContentsMargins(18, 14, 18, 14)
         wl.addWidget(self.years_table)
-        self.tabs.addTab(wrap, "📅  年度")
+        self.tabs.addTab(wrap, "年度")
 
     # -------------------------------------------------- 主题
     def _apply_theme(self):
@@ -356,9 +418,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
+        # 收尾链：停事件循环 → 删 worker → 删 thread → 清引用，
+        # 杜绝"线程仍在运行就被销毁"以及反复抓取导致的对象堆积。
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._on_thread_done)
         self._thread.start()
+
+    def _on_thread_done(self):
+        self._thread = None
+        self._worker = None
 
     def _on_cancel(self):
         if self._worker:
@@ -376,7 +447,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.report = report
         self._reset_controls()
         self.status_label.setText(
-            f"✓ {report.total_items} 条 · 均分 {report.overall_avg_rating} · "
+            f"{report.total_items} 条 · 均分 {report.overall_avg_rating} · "
             f"完成率 {report.avg_completion}%")
         for a in (self.act_csv, self.act_json, self.act_html):
             a.setEnabled(True)
@@ -411,28 +482,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_empty_state(self, empty: bool):
         if empty and self.overview_flow.count() == 0:
-            tip = QtWidgets.QLabel("👋 输入用户 ID 后点击「开始抓取」")
+            tip = QtWidgets.QLabel("输入 Bangumi 用户 ID，点击「开始抓取」开始")
             tip.setObjectName("Empty")
             self.overview_flow.addWidget(tip)
 
     def _render_overview(self):
         self._clear_flow(self.overview_flow)
         r = self.report
-        p = self.palette_
         cards = [
-            ("总收藏", r.total_items, p.accent),
-            ("平均评分", f"{r.overall_avg_rating:.1f}", p.accent2),
-            ("完成率", f"{r.avg_completion:.0f}%", p.warning),
-            ("覆盖年份", len(r.by_year), p.accent),
+            ("总收藏", r.total_items),
+            ("平均评分", f"{r.overall_avg_rating:.1f}"),
+            ("完成率", f"{r.avg_completion:.0f}%"),
+            ("覆盖年份", len(r.by_year)),
         ]
         for tn, cnt in r.type_counts.items():
-            cards.append((tn, cnt, p.muted))
-        for label, val, color in cards:
-            self.overview_flow.addWidget(StatCard(val, label, color))
+            cards.append((tn, cnt))
+        for label, val in cards:
+            self.overview_flow.addWidget(StatCard(val, label))
 
     def _render_charts(self):
         self._clear_flow(self.charts_flow)
-        figs = build_figures(self.report)
+        figs = build_figures(self.report, dark=self.dark)
         self._figs = figs  # keep refs alive
         for key, title in CHART_TITLES.items():
             if key in figs:
@@ -444,6 +514,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model.setHorizontalHeaderLabels(headers)
         for it in self.collection.items:
             name = QtGui.QStandardItem(it.subject_name)
+            # 预拼可搜索文本：作品名 + 标签 + 短评（短评未单独成列，借此也可被搜索到）
+            name.setData(
+                " ".join(filter(None, [it.subject_name, " ".join(it.tags), it.comment])),
+                QtCore.Qt.UserRole,
+            )
             year = QtGui.QStandardItem()
             year.setData(it.subject_year or 0, QtCore.Qt.DisplayRole)
             year.setTextAlignment(QtCore.Qt.AlignCenter)
@@ -455,17 +530,18 @@ class MainWindow(QtWidgets.QMainWindow):
             bgm = QtGui.QStandardItem()
             bgm.setData(round(it.subject_score, 1), QtCore.Qt.DisplayRole)
             bgm.setTextAlignment(QtCore.Qt.AlignCenter)
-            prog = QtGui.QStandardItem(f"{it.completion_rate*100:.0f}%" if it.completion_rate else "-")
+            prog = QtGui.QStandardItem(_progress_label(it))
             prog.setTextAlignment(QtCore.Qt.AlignCenter)
             tags = QtGui.QStandardItem("、".join(it.tags[:5]))
             self.model.appendRow([name, year, status, myrate, bgm, prog, tags])
         self.table.setColumnWidth(0, 360)
         for c in range(1, 6):
             self.table.setColumnWidth(c, 90)
+        self.table.setColumnWidth(5, 132)  # 进度列文本更长，单独加宽
         self.count_label.setText(f"共 {self.model.rowCount()} 条")
 
     def _on_search(self, text):
-        self.proxy.setFilterFixedString(text)
+        self.proxy.set_needle(text)
         self.count_label.setText(f"匹配 {self.proxy.rowCount()} / {self.model.rowCount()} 条")
 
     def _open_subject(self, index):
@@ -545,7 +621,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _clear_cache(self):
         from .cache import Cache
-        c = Cache()
+        from .config import load_config
+        cache_dir = load_config().get("cache", {}).get("dir") or None
+        c = Cache(directory=cache_dir)
         c.clear()
         c.close()
         self.status_label.setText("缓存已清空")

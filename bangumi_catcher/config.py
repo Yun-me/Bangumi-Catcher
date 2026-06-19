@@ -13,7 +13,7 @@ import yaml
 DEFAULT_CONFIG: dict[str, Any] = {
     "api": {
         "base_url": "https://api.bgm.tv",
-        "user_agent": "bangumi-catcher/3.0 (https://github.com/Yun-me/Bangumi-Catcher)",
+        "user_agent": "bangumi-catcher (https://github.com/Yun-me/Bangumi-Catcher)",
         "timeout": 30,
         "max_retries": 3,
         "retry_delay": 1.0,
@@ -21,7 +21,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "collection": {
         "subject_type": 2,
         "limit": 50,
-        "rate_limit_delay": 1.0,
+        "rate_limit_delay": 0.0,
+        "max_concurrent": 8,
+    },
+    "cache": {
+        "enabled": True,
+        "ttl": 3600,
+        "dir": "",
     },
     "analysis": {
         "year_start": 2000,

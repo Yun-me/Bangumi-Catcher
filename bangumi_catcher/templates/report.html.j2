@@ -3,29 +3,29 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ report.username }} - Bangumi 收藏分析</title>
+<title>{{ report.username }} · Bangumi 收藏分析</title>
 <style>
-:root{--bg:#F7F8FA;--card:#fff;--ink:#2C2E33;--muted:#9AA0A6;--accent:#4C8BF5}
+:root{--bg:#F6F7F9;--card:#fff;--ink:#1F2329;--muted:#8A929E;--accent:#3B7DF0;--border:#E8EAED}
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
-header{background:linear-gradient(135deg,#4C8BF5,#6AA8FF);color:#fff;padding:40px 32px}
-header h1{margin:0 0 6px;font-size:26px}
-header p{margin:0;opacity:.9}
-.stats{display:flex;gap:16px;flex-wrap:wrap;padding:24px 32px}
-.stat{background:var(--card);border-radius:14px;padding:18px 24px;box-shadow:0 1px 3px rgba(0,0,0,.06);flex:1;min-width:140px}
-.stat .n{font-size:28px;font-weight:700;color:var(--accent)}
+header{background:var(--card);border-bottom:1px solid var(--border);padding:32px 32px 24px}
+header h1{margin:0 0 6px;font-size:22px;font-weight:600}
+header p{margin:0;color:var(--muted);font-size:13px}
+.stats{display:flex;gap:14px;flex-wrap:wrap;padding:22px 32px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px 20px;flex:1;min-width:140px}
+.stat .n{font-size:25px;font-weight:700}
 .stat .l{color:var(--muted);font-size:13px;margin-top:4px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:20px;padding:8px 32px 40px}
-.card{background:var(--card);border-radius:16px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-.card h3{margin:0 0 12px;font-size:15px;color:var(--ink)}
-.card img{max-width:100%;height:auto;border-radius:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:18px;padding:6px 32px 40px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px}
+.card h3{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--ink)}
+.card img{max-width:100%;height:auto;border-radius:4px}
 footer{text-align:center;color:var(--muted);padding:24px;font-size:13px}
-@media(max-width:640px){.stats{padding:16px;gap:10px}.grid{padding:8px 16px 24px;grid-template-columns:1fr}header{padding:28px 20px}}
+@media(max-width:640px){.stats{padding:16px;gap:10px}.grid{padding:6px 16px 24px;grid-template-columns:1fr}header{padding:24px 20px}}
 </style>
 </head>
 <body>
 <header>
-  <h1>📊 {{ report.username }} 的收藏分析</h1>
+  <h1>{{ report.username }} 的收藏分析</h1>
   <p>生成于 {{ report.generated_at[:19] }} · {{ report.total_items }} 条收藏 · 平均评分 {{ report.overall_avg_rating }}</p>
 </header>
 
@@ -39,31 +39,31 @@ footer{text-align:center;color:var(--muted);padding:24px;font-size:13px}
 
 <div class="grid">
   {% if charts.rating_distribution %}
-  <div class="card"><h3>⭐ 评分分布</h3><img src="{{ charts.rating_distribution }}" alt="评分分布"></div>
+  <div class="card"><h3>评分分布</h3><img src="{{ charts.rating_distribution }}" alt="评分分布"></div>
   {% endif %}
   {% if charts.type_distribution %}
-  <div class="card"><h3>🍩 类型分布</h3><img src="{{ charts.type_distribution }}" alt="类型分布"></div>
+  <div class="card"><h3>收藏状态分布</h3><img src="{{ charts.type_distribution }}" alt="状态分布"></div>
   {% endif %}
   {% if charts.yearly_trend %}
-  <div class="card"><h3>📈 年度趋势</h3><img src="{{ charts.yearly_trend }}" alt="年度趋势"></div>
+  <div class="card"><h3>年度收藏趋势</h3><img src="{{ charts.yearly_trend }}" alt="年度趋势"></div>
   {% endif %}
   {% if charts.yearly_rating %}
-  <div class="card"><h3>📊 年度均分</h3><img src="{{ charts.yearly_rating }}" alt="年度均分"></div>
+  <div class="card"><h3>年度平均评分</h3><img src="{{ charts.yearly_rating }}" alt="年度均分"></div>
   {% endif %}
   {% if charts.type_trend %}
-  <div class="card"><h3>🧱 收藏状态年度构成</h3><img src="{{ charts.type_trend }}" alt="状态构成"></div>
+  <div class="card"><h3>收藏状态年度构成</h3><img src="{{ charts.type_trend }}" alt="状态构成"></div>
   {% endif %}
   {% if charts.season_distribution %}
-  <div class="card"><h3>🗓 追番季度分布</h3><img src="{{ charts.season_distribution }}" alt="季度分布"></div>
+  <div class="card"><h3>追番季度分布</h3><img src="{{ charts.season_distribution }}" alt="季度分布"></div>
   {% endif %}
   {% if charts.rating_compare %}
-  <div class="card"><h3>🎯 我的评分 vs 全站均分</h3><img src="{{ charts.rating_compare }}" alt="评分对比"></div>
+  <div class="card"><h3>我的评分 vs 全站均分</h3><img src="{{ charts.rating_compare }}" alt="评分对比"></div>
   {% endif %}
   {% if charts.top_rated %}
-  <div class="card"><h3>🏆 最爱排行</h3><img src="{{ charts.top_rated }}" alt="排行"></div>
+  <div class="card"><h3>我的最爱 Top 15</h3><img src="{{ charts.top_rated }}" alt="最爱排行"></div>
   {% endif %}
 </div>
 
-<footer>由 Bangumi Catcher v1.1 生成 · 数据来源 <a href="https://bgm.tv">Bangumi 番组计划</a></footer>
+<footer>由 Bangumi Catcher 生成 · 数据来源 <a href="https://bgm.tv">Bangumi 番组计划</a></footer>
 </body>
 </html>

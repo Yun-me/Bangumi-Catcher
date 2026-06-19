@@ -40,7 +40,19 @@ class Subject(BaseModel):
     @field_validator("name", "name_cn", "summary", "date", "platform", mode="before")
     @classmethod
     def _none_str(cls, v: str | None) -> str:
+        # API 偶尔把字符串字段返回为 null，这里统一兜底为空串，避免后续 .strip()/切片报错。
         return v or ""
+
+    @field_validator("eps", "total_episodes", "rank", mode="before")
+    @classmethod
+    def _none_int(cls, v: object) -> int:
+        # null / 缺失 / 非数字一律归零，杜绝单条脏数据导致整次抓取崩溃。
+        if v in (None, ""):
+            return 0
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
 
     @computed_field
     @property
@@ -51,6 +63,16 @@ class Subject(BaseModel):
             except ValueError:
                 pass
         return None
+
+    @computed_field
+    @property
+    def episodes_total(self) -> int:
+        """总集数：优先 total_episodes，回退到 eps。
+
+        收藏列表内联的 SlimSubject 只有 ``eps`` 没有 ``total_episodes``，
+        若直接用 ``total_episodes`` 作分母会恒为 0，使完成率永远算成 0。
+        """
+        return self.total_episodes or self.eps
 
     @computed_field
     @property
@@ -89,7 +111,7 @@ class CollectionItem(BaseModel):
     subject: Subject | None = None
     name: str = ""
     type: int = 0
-    rate: int = Field(default=0, ge=0, le=10)
+    rate: int = 0  # 0-10；越界值在校验器里被收敛而非抛错
     comment: str = ""
     tags: list[str] = Field(default_factory=list)
     ep_status: int = 0
@@ -101,6 +123,35 @@ class CollectionItem(BaseModel):
     @classmethod
     def _none_empty(cls, v: str | None) -> str:
         return v or ""
+
+    @field_validator("type", "rate", "ep_status", "vol_status", mode="before")
+    @classmethod
+    def _coerce_int(cls, v: object, info) -> int:
+        # null / 非数字归零；rate 额外收敛到 [0, 10]，
+        # 这样即使接口返回异常评分也不会让整条收藏校验失败。
+        if v in (None, ""):
+            return 0
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return 0
+        if info.field_name == "rate":
+            return max(0, min(10, n))
+        return n
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _coerce_tags(cls, v: object) -> list[str]:
+        # 兼容三种历史/异常形态：null、纯字符串列表、{"name": ...} 对象列表。
+        if not v:
+            return []
+        out: list[str] = []
+        for t in v:
+            if isinstance(t, str):
+                out.append(t)
+            elif isinstance(t, dict) and t.get("name"):
+                out.append(str(t["name"]))
+        return out
 
     @computed_field
     @property
@@ -132,9 +183,19 @@ class CollectionItem(BaseModel):
     @computed_field
     @property
     def completion_rate(self) -> float:
-        """完成率 0-1."""
-        if self.subject and self.subject.total_episodes:
-            return min(self.ep_status / self.subject.total_episodes, 1.0)
+        """完成率 0-1。
+
+        语义修正：
+          * 「看过」(type=2) 一律算 100%——条目已看完，与是否逐集记录 ep_status 无关
+            （Bangumi 上很多看过条目 ep_status 为 0，旧实现会把它们误算成 0%）；
+          * 「在看/搁置/抛弃」按 已看集数 / 总集数 计（总集数走 eps 回退）；
+          * 「想看」及无进度信息则为 0。
+        """
+        if self.type == 2:  # 看过
+            return 1.0
+        total = self.subject.episodes_total if self.subject else 0
+        if total > 0 and self.ep_status > 0:
+            return min(self.ep_status / total, 1.0)
         return 0.0
 
 
