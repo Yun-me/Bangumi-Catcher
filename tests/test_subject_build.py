@@ -3,7 +3,7 @@
 收藏列表内联的 SlimSubject 评分是扁平 ``score`` 字段；条目详情接口是嵌套
 ``rating.score``。``_build_subject`` 需同时兼容两者。
 """
-from bangumi_catcher.api import _build_subject
+from bangumi_catcher.core.api import _build_subject
 
 
 def test_slim_subject_flat_score_maps():

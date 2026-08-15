@@ -3,8 +3,7 @@
 这两段逻辑是 v1.2 抓取重构的关键，从根本上消除了旧版 while-True 翻页可能
 出现的死循环，并保证 total 抖动时不产生重复条目。
 """
-from bangumi_catcher.api import compute_remaining_offsets, merge_pages
-
+from bangumi_catcher.core.api import compute_remaining_offsets, merge_pages
 
 # ---------------- compute_remaining_offsets ----------------
 

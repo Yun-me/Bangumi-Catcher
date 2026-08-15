@@ -1,6 +1,5 @@
 """配置回归测试 —— 锁住环境变量嵌套覆盖。"""
-import os
-from bangumi_catcher.config import load_config, validate_config
+from bangumi_catcher.core.config import load_config, validate_config
 
 
 def test_defaults_load():

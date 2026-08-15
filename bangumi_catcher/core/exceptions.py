@@ -42,3 +42,7 @@ class NotFoundError(BangumiError):
 
 class EmptyCollectionError(BangumiError):
     """用户收藏为空 (可能设置了隐私保护)."""
+
+
+class OperationCancelled(BangumiError):
+    """操作被用户主动取消（用于后台线程快速中断抓取/分析）。"""

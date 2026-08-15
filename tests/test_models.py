@@ -1,5 +1,5 @@
 """模型 computed_field 测试。"""
-from bangumi_catcher.models import Subject, CollectionItem
+from bangumi_catcher.core.models import CollectionItem, Subject
 
 
 def test_subject_year_and_season():

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bangumi-catcher"
-version = "1.2.2"
+version = "2.0.0"
 description = "Bangumi 用户动画收藏批量抓取与数据分析 —— 桌面 GUI 工具"
 readme = "README.md"
 license = { text = "MIT" }

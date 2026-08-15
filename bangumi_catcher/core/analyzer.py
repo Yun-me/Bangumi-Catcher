@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import logging
 from collections import Counter, defaultdict
 
@@ -9,6 +10,7 @@ from .models import (
     AnalysisReport,
     RatingCompareItem,
     SeasonStats,
+    TagItem,
     TopRatedItem,
     TypeTrendItem,
     UserCollection,
@@ -29,6 +31,7 @@ def analyze(
     type_counter: Counter[str] = Counter()
     rating_counter: Counter[int] = Counter()
     season_counter: Counter[str] = Counter()
+    tag_counter: Counter[str] = Counter()
     by_year: dict[int, YearStats] = defaultdict(lambda: YearStats(year=0))
     type_by_year: dict[int, Counter[str]] = defaultdict(Counter)
     rating_pairs: list[tuple[str, int, float]] = []
@@ -39,6 +42,8 @@ def analyze(
         type_counter[item.collection_type_name] += 1
         if item.rate > 0:
             rating_counter[item.rate] += 1
+        for tag in item.tags:
+            tag_counter[tag] += 1
 
         year = item.subject_year
         if item.subject:
@@ -75,6 +80,8 @@ def analyze(
     report.rating_distribution = dict(sorted(rating_counter.items()))
     report.by_year = dict(sorted(by_year.items()))
     report.season_stats = [SeasonStats(season=k, count=v) for k, v in sorted(season_counter.items())]
+    report.tag_counts = dict(tag_counter.most_common())
+    report.top_tags = [TagItem(name=k, count=v) for k, v in tag_counter.most_common(top_n)]
 
     # 年度趋势
     report.year_trend = [
@@ -93,21 +100,21 @@ def analyze(
         for y, c in sorted(type_by_year.items())
     ]
 
-    # 高分排行
+    # 高分排行（用堆取 Top N，避免全量排序；收藏上万条时收益明显）
     rated = [it for it in collection.items if it.type == 2 and it.rate >= 5 and it.subject]
-    rated.sort(key=lambda x: x.rate, reverse=True)
+    top_rated = heapq.nlargest(top_n, rated, key=lambda it: (it.rate, it.subject_score))
     report.top_rated = [
         TopRatedItem(subject_id=it.subject_id, name=it.subject.name if it.subject else it.name,
                       name_cn=it.subject.name_cn if it.subject else "", rate=it.rate,
                       year=it.subject_year, cover_url=it.subject_cover, bangumi_score=it.subject_score)
-        for it in rated[:top_n]
+        for it in top_rated
     ]
 
-    # 评分对比
-    rating_pairs.sort(key=lambda x: x[1], reverse=True)
+    # 评分对比（同样只取前 50，避免全量排序）
+    top_pairs = heapq.nlargest(50, rating_pairs, key=lambda x: (x[1], x[2]))
     report.rating_compare = [
         RatingCompareItem(name=n, my_rate=mr, bgm_score=bs)
-        for n, mr, bs in rating_pairs[:50]
+        for n, mr, bs in top_pairs
     ]
 
     # 平均完成率

@@ -22,7 +22,8 @@ cache:
 
 analysis:
   year_start: 2000
-  year_end: 2025
+  # year_end 缺省时使用当前年份；如需要固定范围可取消注释并修改
+  # year_end: 2026
   top_n: 20
 
 export:

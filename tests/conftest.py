@@ -1,7 +1,11 @@
 """共享 fixtures：构造一个小型 UserCollection 供测试使用。"""
 import pytest
-from bangumi_catcher.models import (
-    CollectionItem, RatingInfo, Subject, UserCollection,
+
+from bangumi_catcher.core.models import (
+    CollectionItem,
+    RatingInfo,
+    Subject,
+    UserCollection,
 )
 
 

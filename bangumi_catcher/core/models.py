@@ -6,7 +6,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
-
 # ================================================================
 # API 响应模型
 # ================================================================
@@ -265,6 +264,12 @@ class RatingCompareItem(BaseModel):
     bgm_score: float
 
 
+class TagItem(BaseModel):
+    """用户收藏标签统计."""
+    name: str
+    count: int
+
+
 class AnalysisReport(BaseModel):
     username: str
     total_items: int
@@ -276,6 +281,8 @@ class AnalysisReport(BaseModel):
     type_trend: list[TypeTrendItem] = Field(default_factory=list)
     season_stats: list[SeasonStats] = Field(default_factory=list)
     rating_compare: list[RatingCompareItem] = Field(default_factory=list)
+    tag_counts: dict[str, int] = Field(default_factory=dict)
+    top_tags: list[TagItem] = Field(default_factory=list)
     avg_completion: float = 0.0
     overall_avg_rating: float = 0.0
     generated_at: str = Field(default_factory=lambda: datetime.now().isoformat())

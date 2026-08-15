@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "analysis": {
         "year_start": 2000,
-        "year_end": 2025,
+        "year_end": datetime.now().year,
         "top_n": 20,
     },
     "export": {
@@ -81,7 +82,7 @@ def load_config(
                 break
 
     if external_file:
-        with open(external_file, "r", encoding="utf-8") as f:
+        with open(external_file, encoding="utf-8") as f:
             user_cfg = yaml.safe_load(f) or {}
         cfg = _deep_merge(cfg, user_cfg)
 

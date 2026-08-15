@@ -15,11 +15,14 @@ import io
 from typing import Callable
 
 import matplotlib
-matplotlib.use("Agg")  # 默认后端；GUI 侧用 QtAgg 的 FigureCanvas 包裹同一 Figure
+
+# 默认使用 Agg；若 GUI 已初始化 Qt 后端则不覆盖，避免破坏 FigureCanvasQTAgg。
+if "qt" not in matplotlib.get_backend().lower():
+    matplotlib.use("Agg")
 import matplotlib.font_manager as fm
 from matplotlib.figure import Figure
 
-from .models import AnalysisReport
+from ..core.models import AnalysisReport
 
 # 分类色板（亮/暗通用，均经过对比度校验）
 PALETTE = ["#4C8BF5", "#1FB6A6", "#F5A623", "#E2506B", "#8B6CEF", "#22A8C0", "#E07B39"]
@@ -104,7 +107,7 @@ def make_type_distribution(report: AnalysisReport, th: dict = LIGHT) -> Figure:
     w, _, at = ax.pie(sizes, labels=None, colors=PALETTE[:len(labels)],
                       autopct=lambda p: f"{p:.0f}%" if p >= 4 else "",
                       startangle=90, pctdistance=0.78,
-                      wedgeprops=dict(width=0.42, edgecolor=th["edge"], linewidth=2))
+                      wedgeprops={"width": 0.42, "edgecolor": th["edge"], "linewidth": 2})
     for t in at:
         t.set_color("white")
         t.set_fontsize(9)
@@ -188,6 +191,26 @@ def make_season_distribution(report: AnalysisReport, th: dict = LIGHT) -> Figure
     return fg
 
 
+def make_top_tags(report: AnalysisReport, th: dict = LIGHT) -> Figure:
+    tags = report.top_tags[:15]
+    if not tags:
+        return _empty("热门标签", th)
+    fg, ax = _fig(th, 6.4, max(3.0, len(tags) * 0.36))
+    labels = [t.name[:16] for t in reversed(tags)]
+    counts = [t.count for t in reversed(tags)]
+    ax.barh(range(len(labels)), counts, color=ACCENT2, zorder=3, height=0.7)
+    for i, v in enumerate(counts):
+        ax.text(v + 0.1, i, str(v), ha="left", va="center", fontsize=8, color=th["muted"])
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("出现次数", color=th["muted"])
+    ax.grid(axis="x", color=th["grid"], linewidth=0.8, alpha=0.7)
+    ax.grid(axis="y", visible=False)
+    _title(ax, "热门标签 Top 15", th)
+    _cjk(ax)
+    return fg
+
+
 def make_rating_compare(report: AnalysisReport, th: dict = LIGHT) -> Figure:
     pairs = report.rating_compare
     if not pairs:
@@ -239,6 +262,7 @@ FIGURE_BUILDERS: dict[str, Callable[..., Figure]] = {
     "yearly_rating": make_yearly_rating,
     "top_rated": make_top_rated,
     "season_distribution": make_season_distribution,
+    "top_tags": make_top_tags,
     "rating_compare": make_rating_compare,
     "type_trend": make_type_trend,
 }
@@ -251,6 +275,7 @@ CHART_TITLES: dict[str, str] = {
     "yearly_rating": "年度均分",
     "type_trend": "状态构成",
     "season_distribution": "季度分布",
+    "top_tags": "热门标签",
     "rating_compare": "评分对比",
     "top_rated": "最爱排行",
 }

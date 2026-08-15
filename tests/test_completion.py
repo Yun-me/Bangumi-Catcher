@@ -4,7 +4,7 @@
   * SlimSubject 只有 eps 没有 total_episodes 时，总集数走 eps 回退（旧版分母为 0）；
   * 「看过」一律 100%，「在看」按 已看/总集 计（旧版看过条目 ep_status=0 会误算成 0%）。
 """
-from bangumi_catcher.models import CollectionItem, Subject
+from bangumi_catcher.core.models import CollectionItem, Subject
 
 
 def _subj(eps=0, total_episodes=0):

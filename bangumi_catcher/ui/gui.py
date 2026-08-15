@@ -16,23 +16,26 @@ import webbrowser
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .analyzer import analyze
-from .api import BangumiClient
-from .config import load_config
-from .export import collection_to_csv, collection_to_json
+from .. import __version__
+from ..core.analyzer import analyze
+from ..core.api import BangumiClient
+from ..core.config import load_config
+from ..core.exceptions import OperationCancelled
+from ..core.export import collection_to_csv, collection_to_json, report_to_json
+from ..core.models import AnalysisReport, UserCollection
 from .flowlayout import FlowLayout
-from .models import AnalysisReport, UserCollection
 from .theme import Palette, build_stylesheet
 from .visualizer import CHART_TITLES, build_figures, render_all
 
 logger = logging.getLogger(__name__)
 
 APP_NAME = "Bangumi Catcher"
-APP_VERSION = "1.2.2"
+APP_VERSION = __version__
 TYPE_MAP = {"动画": 2, "书籍": 1, "音乐": 3, "游戏": 4, "三次元": 6}
 
 
@@ -61,7 +64,7 @@ class FetchWorker(QtCore.QObject):
             def progress(frac, msg):
                 # 取消信号在此检查：抛出异常即可中断 asyncio.run 内的抓取。
                 if self._cancel.is_set():
-                    raise _Cancelled()
+                    raise OperationCancelled("已取消")
                 self.progress.emit(float(frac), str(msg))
 
             progress(0.02, "连接 Bangumi API …")
@@ -77,6 +80,7 @@ class FetchWorker(QtCore.QObject):
                         self.username, subject_type=self.subject_type,
                         force_refresh=self.force_refresh,
                         progress=fetch_progress,
+                        cancel_check=self._cancel.is_set,
                     )
 
             collection = asyncio.run(_fetch())
@@ -89,15 +93,11 @@ class FetchWorker(QtCore.QObject):
             )
             progress(1.0, "完成")
             self.finished.emit(collection, report)
-        except _Cancelled:
+        except OperationCancelled:
             self.failed.emit("已取消")
         except Exception as e:  # noqa: BLE001
             logger.exception("抓取失败")
             self.failed.emit(str(e))
-
-
-class _Cancelled(Exception):
-    pass
 
 
 # ============================================================ 小组件
@@ -184,15 +184,25 @@ class _SearchProxy(QtCore.QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._needle = ""
+        self._status_filter = ""
 
     def set_needle(self, text: str) -> None:
         self._needle = (text or "").strip().lower()
         self.invalidateFilter()
 
+    def set_status_filter(self, status: str) -> None:
+        self._status_filter = status or ""
+        self.invalidateFilter()
+
     def filterAcceptsRow(self, source_row, source_parent):  # noqa: N802 (Qt 命名)
+        model = self.sourceModel()
+        if self._status_filter:
+            status_idx = model.index(source_row, 2, source_parent)
+            status = model.data(status_idx, QtCore.Qt.UserRole) or ""
+            if status != self._status_filter:
+                return False
         if not self._needle:
             return True
-        model = self.sourceModel()
         idx = model.index(source_row, 0, source_parent)
         haystack = model.data(idx, QtCore.Qt.UserRole) or ""
         return self._needle in haystack.lower()
@@ -225,20 +235,21 @@ class MainWindow(QtWidgets.QMainWindow):
         m_file = bar.addMenu("文件")
         self.act_csv = m_file.addAction("导出 CSV…", self._export_csv)
         self.act_json = m_file.addAction("导出 JSON…", self._export_json)
+        self.act_report_json = m_file.addAction("导出报告 JSON…", self._export_report_json)
         self.act_html = m_file.addAction("导出 HTML 报告…", self._export_html)
         self.act_csv.setShortcut("Ctrl+S")
         m_file.addSeparator()
         m_file.addAction("退出", self.close)
 
         m_tools = bar.addMenu("工具")
-        m_tools.addAction("清除缓存", self._clear_cache)
+        m_tools.addAction("查看 / 清空缓存", self._clear_cache)
         self.act_theme = m_tools.addAction("切换 暗/亮 主题", self._toggle_theme)
         self.act_theme.setShortcut("Ctrl+D")
 
         m_help = bar.addMenu("帮助")
         m_help.addAction("关于", self._about)
 
-        for a in (self.act_csv, self.act_json, self.act_html):
+        for a in (self.act_csv, self.act_json, self.act_report_json, self.act_html):
             a.setEnabled(False)
 
     # -------------------------------------------------- UI
@@ -253,25 +264,27 @@ class MainWindow(QtWidgets.QMainWindow):
         # ---- 顶部栏 ----
         header = QtWidgets.QFrame()
         header.setObjectName("Header")
-        header.setFixedHeight(76)
+        header.setMinimumHeight(64)
         hl = QtWidgets.QHBoxLayout(header)
-        hl.setContentsMargins(24, 0, 24, 0)
-        hl.setSpacing(12)
+        hl.setContentsMargins(20, 8, 20, 8)
+        hl.setSpacing(10)
 
         title = QtWidgets.QLabel("Bangumi Catcher")
         title.setObjectName("AppTitle")
+        title.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred)
         hl.addWidget(title)
-        hl.addSpacing(18)
+        hl.addSpacing(12)
 
         self.user_input = QtWidgets.QLineEdit()
         self.user_input.setPlaceholderText("输入 Bangumi 用户 ID / 用户名")
-        self.user_input.setFixedWidth(240)
+        self.user_input.setMinimumWidth(180)
+        self.user_input.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.user_input.returnPressed.connect(self._on_fetch)
-        hl.addWidget(self.user_input)
+        hl.addWidget(self.user_input, 1)
 
         self.type_combo = QtWidgets.QComboBox()
         self.type_combo.addItems(list(TYPE_MAP.keys()))
-        self.type_combo.setFixedWidth(92)
+        self.type_combo.setMinimumWidth(86)
         hl.addWidget(self.type_combo)
 
         self.refresh_check = QtWidgets.QCheckBox("强制刷新")
@@ -288,7 +301,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cancel_btn.setVisible(False)
         hl.addWidget(self.cancel_btn)
 
-        hl.addStretch(1)   # 关键：把控件推向左侧，剩余空间留白而非挤压
         outer.addWidget(header)
 
         # ---- 标签页 ----
@@ -341,6 +353,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.search_box.setPlaceholderText("搜索作品名 / 标签 / 评价")
         self.search_box.textChanged.connect(self._on_search)
         bar.addWidget(self.search_box, 1)
+        self.status_filter = QtWidgets.QComboBox()
+        self.status_filter.addItem("全部状态", "")
+        for label in ("想看", "看过", "在看", "搁置", "抛弃"):
+            self.status_filter.addItem(label, label)
+        self.status_filter.currentIndexChanged.connect(self._on_status_filter)
+        bar.addWidget(self.status_filter)
         self.count_label = QtWidgets.QLabel("")
         self.count_label.setObjectName("Muted")
         bar.addWidget(self.count_label)
@@ -358,6 +376,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.proxy = _SearchProxy(self)
         self.proxy.setSourceModel(self.model)
         self.table.setModel(self.proxy)
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_menu)
         v.addWidget(self.table, 1)
         self.tabs.addTab(page, "收藏总表")
 
@@ -445,11 +465,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_finished(self, collection, report):
         self.collection = collection
         self.report = report
+        self._charts_uri = {}  # 重要：新报告必须丢弃旧的 HTML 图表缓存
+        self.search_box.clear()
+        self.status_filter.setCurrentIndex(0)
         self._reset_controls()
         self.status_label.setText(
             f"{report.total_items} 条 · 均分 {report.overall_avg_rating} · "
             f"完成率 {report.avg_completion}%")
-        for a in (self.act_csv, self.act_json, self.act_html):
+        for a in (self.act_csv, self.act_json, self.act_report_json, self.act_html):
             a.setEnabled(True)
         self._set_empty_state(False)
         self._render_overview()
@@ -523,6 +546,7 @@ class MainWindow(QtWidgets.QMainWindow):
             year.setData(it.subject_year or 0, QtCore.Qt.DisplayRole)
             year.setTextAlignment(QtCore.Qt.AlignCenter)
             status = QtGui.QStandardItem(it.collection_type_name)
+            status.setData(it.collection_type_name, QtCore.Qt.UserRole)
             status.setTextAlignment(QtCore.Qt.AlignCenter)
             myrate = QtGui.QStandardItem()
             myrate.setData(it.rate or 0, QtCore.Qt.DisplayRole)
@@ -542,6 +566,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_search(self, text):
         self.proxy.set_needle(text)
+        self._update_count()
+
+    def _on_status_filter(self, _index):
+        status = self.status_filter.currentData() or ""
+        self.proxy.set_status_filter(status)
+        self._update_count()
+
+    def _update_count(self):
         self.count_label.setText(f"匹配 {self.proxy.rowCount()} / {self.model.rowCount()} 条")
 
     def _open_subject(self, index):
@@ -549,6 +581,24 @@ class MainWindow(QtWidgets.QMainWindow):
         if 0 <= row < len(self.collection.items):
             sid = self.collection.items[row].subject_id
             webbrowser.open(f"https://bgm.tv/subject/{sid}")
+
+    def _show_table_menu(self, pos):
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        row = self.proxy.mapToSource(index).row()
+        if not (0 <= row < len(self.collection.items)):
+            return
+        item = self.collection.items[row]
+        menu = QtWidgets.QMenu(self)
+        act_open = menu.addAction("在浏览器打开条目")
+        act_copy = menu.addAction("复制条目链接")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen is act_open:
+            webbrowser.open(f"https://bgm.tv/subject/{item.subject_id}")
+        elif chosen is act_copy:
+            QtWidgets.QApplication.clipboard().setText(f"https://bgm.tv/subject/{item.subject_id}")
+            self.status_label.setText("已复制条目链接")
 
     def _render_ranking(self):
         r = self.report
@@ -599,6 +649,14 @@ class MainWindow(QtWidgets.QMainWindow):
             collection_to_json(self.collection, p)
             self.status_label.setText(f"已导出 JSON：{p}")
 
+    def _export_report_json(self):
+        if not self.report:
+            return
+        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出报告 JSON", "report.json", "JSON (*.json)")
+        if p:
+            report_to_json(self.report, p)
+            self.status_label.setText(f"已导出报告 JSON：{p}")
+
     def _export_html(self):
         if not self.report:
             return
@@ -609,7 +667,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._charts_uri:
             self._charts_uri = render_all(self.report)
         env = Environment(
-            loader=FileSystemLoader(str(Path(__file__).resolve().parent / "templates")),
+            loader=FileSystemLoader(str(Path(__file__).resolve().parent.parent / "templates")),
             autoescape=True)
         html = env.get_template("report.html.j2").render(report=self.report, charts=self._charts_uri)
         Path(p).write_text(html, encoding="utf-8")
@@ -620,13 +678,18 @@ class MainWindow(QtWidgets.QMainWindow):
             webbrowser.open(Path(p).resolve().as_uri())
 
     def _clear_cache(self):
-        from .cache import Cache
-        from .config import load_config
+        from ..core.cache import Cache
+        from ..core.config import load_config
         cache_dir = load_config().get("cache", {}).get("dir") or None
         c = Cache(directory=cache_dir)
+        count = c.size
+        if count and QtWidgets.QMessageBox.question(
+                self, "清空缓存", f"确定清空 {count} 条本地缓存吗？") != QtWidgets.QMessageBox.Yes:
+            c.close()
+            return
         c.clear()
         c.close()
-        self.status_label.setText("缓存已清空")
+        self.status_label.setText(f"缓存已清空（{count} 条）")
 
     def _about(self):
         QtWidgets.QMessageBox.about(

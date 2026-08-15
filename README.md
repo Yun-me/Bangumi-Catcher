@@ -15,12 +15,12 @@
 | 功能 | 说明 |
 |---|---|
 | 桌面界面 | 基于 **PySide6 (Qt)**，响应式布局，窗口缩放/全屏自动重排，亮/暗双主题 |
-| 实时图表 | matplotlib 画布随窗口实时重绘，且随主题切换自动重着色；评分分布、状态分布、年度趋势、年度均分、季度分布、最爱排行等 |
-| 收藏总表 | 全部收藏的可搜索、可排序数据表；双击跳转 Bangumi 条目页 |
-| 后台执行 | 抓取/分析在后台线程执行，进度条全程平滑反馈，可随时取消 |
+| 实时图表 | matplotlib 画布随窗口实时重绘，且随主题切换自动重着色；评分分布、状态分布、年度趋势、年度均分、季度分布、热门标签、最爱排行等 |
+| 收藏总表 | 全部收藏的可搜索、可排序数据表；支持按收藏状态筛选、双击/右键打开 Bangumi 条目页 |
+| 后台执行 | 抓取/分析在后台线程执行，进度条全程平滑反馈，可随时取消（新增快速中断） |
 | 并发抓取 | httpx 异步并发拉取条目详情，按页偏移并发分页 + 自动重试 + 速率限制 |
-| 本地缓存 | diskcache 持久化，同一用户默认 1 小时内不重复请求；支持「强制刷新」 |
-| 多格式导出 | CSV / JSON / 自包含 HTML 报告（可一键在浏览器打开） |
+| 本地缓存 | diskcache 持久化，同一用户默认 1 小时内不重复请求；支持「强制刷新」与缓存管理 |
+| 多格式导出 | CSV / JSON / 报告 JSON / 自包含 HTML 报告（可一键在浏览器打开） |
 | 状态记忆 | 自动记住上次用户名、窗口大小与主题偏好 |
 
 ---
@@ -76,22 +76,26 @@ ruff check bangumi_catcher       # 代码检查（规则见 pyproject.toml）
 ```
 Bangumi-Catcher/
 ├── bangumi_catcher/
-│   ├── gui.py            # PySide6 主窗口（响应式布局 + 后台线程）
-│   ├── theme.py          # Qt QSS 主题（亮/暗）
-│   ├── flowlayout.py     # 自动换行布局（响应式核心）
-│   ├── visualizer.py     # matplotlib 图表（GUI 实时 + HTML 导出共用，主题感知）
-│   ├── api.py            # httpx 异步 API 客户端（并发分页 + 重试 + 缓存 + 进度回调）
-│   ├── models.py         # Pydantic v2 数据模型（带宽松字段校验）
-│   ├── analyzer.py       # 多维统计分析引擎（单遍 O(n)）
-│   ├── export.py         # CSV / JSON 导出
-│   ├── config.py         # 配置（内嵌默认 + YAML + 环境变量覆盖）
-│   ├── cache.py          # diskcache 缓存层
-│   ├── exceptions.py     # 异常体系
-│   └── templates/        # HTML 报告模板
-├── tests/                # pytest 测试套件
-├── run.py                # 打包入口
-├── build.py              # PyInstaller 脚本
-├── config.yaml           # 可选外部配置
+│   ├── core/                    # 与 UI 无关的核心逻辑
+│   │   ├── api.py               # httpx 异步 API 客户端（并发分页 + 重试 + 缓存 + 取消）
+│   │   ├── analyzer.py          # 多维统计分析引擎（单遍 O(n)）
+│   │   ├── cache.py             # diskcache 缓存层
+│   │   ├── config.py            # 配置（内嵌默认 + YAML + 环境变量覆盖）
+│   │   ├── exceptions.py        # 异常体系
+│   │   ├── export.py            # CSV / JSON 导出
+│   │   └── models.py            # Pydantic v2 数据模型
+│   ├── ui/                      # PySide6 界面层
+│   │   ├── gui.py               # 主窗口（响应式布局 + 后台线程）
+│   │   ├── theme.py             # Qt QSS 主题（亮/暗）
+│   │   ├── flowlayout.py        # 自动换行布局（响应式核心）
+│   │   └── visualizer.py        # matplotlib 图表（GUI 实时 + HTML 导出共用）
+│   ├── templates/               # HTML 报告模板
+│   ├── __init__.py
+│   └── __main__.py
+├── tests/                       # pytest 测试套件
+├── run.py                       # 打包/开发入口
+├── build.py                     # PyInstaller 脚本
+├── config.yaml                  # 可选外部配置
 ├── pyproject.toml
 └── requirements.txt
 ```
@@ -119,7 +123,7 @@ export BANGUMI_ANALYSIS__TOP_N=30
 | `cache.enabled` | true | 是否启用本地缓存（关闭则每次重新抓取） |
 | `cache.ttl` | 3600 | 收藏数据缓存有效期（秒） |
 | `cache.dir` | "" | 缓存目录，留空 = `~/.cache/bangumi-catcher` |
-| `analysis.top_n` | 20 | 「最爱排行」展示数量 |
+| `analysis.top_n` | 20 | 「最爱排行 / 热门标签」展示数量 |
 
 ---
 

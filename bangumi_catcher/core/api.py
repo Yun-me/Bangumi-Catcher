@@ -17,7 +17,7 @@ from typing import Any, Callable
 import httpx
 
 from .cache import Cache
-from .exceptions import APIError, EmptyCollectionError, NotFoundError, RateLimitError
+from .exceptions import APIError, EmptyCollectionError, NotFoundError, OperationCancelled, RateLimitError
 from .models import (
     CollectionItem,
     ImageInfo,
@@ -166,8 +166,9 @@ class BangumiClient:
 
         self._rate_limiter = _RateLimiter(self.rate_limit_delay)
         self._client: httpx.AsyncClient | None = None
+        self._cancel_check: Callable[[], bool] | None = None
 
-    async def __aenter__(self) -> "BangumiClient":
+    async def __aenter__(self) -> BangumiClient:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout),
             headers={
@@ -190,6 +191,14 @@ class BangumiClient:
             raise RuntimeError("Client not initialized — use `async with`")
         return self._client
 
+    def set_cancel_check(self, check: Callable[[], bool] | None) -> None:
+        """设置取消回调；返回 True 时立即中断当前及后续请求。"""
+        self._cancel_check = check
+
+    def _check_cancel(self) -> None:
+        if self._cancel_check and self._cancel_check():
+            raise OperationCancelled("操作已取消")
+
     # ----------------------------------------------------------------
     # 底层 HTTP
     # ----------------------------------------------------------------
@@ -200,6 +209,7 @@ class BangumiClient:
         last_error: Exception | None = None
 
         for attempt in range(1, self.max_retries + 1):
+            self._check_cancel()
             try:
                 await self._rate_limiter.acquire()
                 resp = await self.client.get(url, params=params)
@@ -209,6 +219,7 @@ class BangumiClient:
                 last_error = APIError(f"网络请求失败：{e}", status_code=0, url=url)
                 if attempt < self.max_retries:
                     await asyncio.sleep(self.retry_delay * attempt)
+                self._check_cancel()
                 continue
 
             # 429 — 速率限制：尊重 Retry-After
@@ -247,7 +258,7 @@ class BangumiClient:
             try:
                 return resp.json()
             except ValueError as e:
-                raise APIError(f"响应不是合法 JSON：{e}", status_code=resp.status_code, url=url)
+                raise APIError(f"响应不是合法 JSON：{e}", status_code=resp.status_code, url=url) from e
 
         raise last_error or APIError("请求多次重试后仍失败。", status_code=0, url=url)
 
@@ -302,6 +313,7 @@ class BangumiClient:
         enrich_subjects: bool = True,
         force_refresh: bool = False,
         progress: ProgressCb | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> UserCollection:
         """分页抓取用户全部收藏，并发获取条目详情。
 
@@ -313,7 +325,9 @@ class BangumiClient:
             enrich_subjects: 是否逐条补全详情（年份/评分/封面）。
             force_refresh: 跳过缓存，强制重新抓取。
             progress: 进度回调 progress(fraction, message)，可抛异常以中断（取消）。
+            cancel_check: 可选取消回调；返回 True 时快速中断抓取。
         """
+        self.set_cancel_check(cancel_check)
         username = username.strip()
         if not username:
             raise APIError("用户名不能为空。", status_code=0, url="")
@@ -338,6 +352,7 @@ class BangumiClient:
         # ---------- 首页（拿到 total）----------
         limit = max(1, min(int(limit), 50))
         _p(0.05, "连接 Bangumi …")
+        self._check_cancel()
         first_data, total = await self._fetch_page(username, subject_type, 0, limit, collection_type)
 
         if not first_data:
@@ -359,15 +374,23 @@ class BangumiClient:
 
             async def grab(off: int) -> tuple[int, list[dict]]:
                 async with sem:
+                    self._check_cancel()
                     data, _ = await self._fetch_page(username, subject_type, off, limit, collection_type)
                     return off, data
 
-            for coro in asyncio.as_completed([grab(o) for o in remaining_offsets]):
-                off, data = await coro
-                raw_pages[off] = data
-                done += 1
-                _p(0.15 + 0.40 * done / len(remaining_offsets),
-                   f"已获取 {done + 1}/{pages_total} 页")
+            tasks = [asyncio.ensure_future(grab(o)) for o in remaining_offsets]
+            try:
+                for fut in asyncio.as_completed(tasks):
+                    off, data = await fut
+                    raw_pages[off] = data
+                    done += 1
+                    self._check_cancel()
+                    _p(0.15 + 0.40 * done / len(remaining_offsets),
+                       f"已获取 {done + 1}/{pages_total} 页")
+            except OperationCancelled:
+                for t in tasks:
+                    t.cancel()
+                raise
 
         # 按 offset 顺序合并 + 去重（防止 total 抖动造成的重叠）
         raw_items = merge_pages(raw_pages)
@@ -411,8 +434,11 @@ class BangumiClient:
                 async def enrich_one(item: CollectionItem) -> None:
                     nonlocal done
                     async with sem:
+                        self._check_cancel()
                         try:
                             item.subject = await self.get_subject(item.subject_id)
+                        except OperationCancelled:
+                            raise
                         except NotFoundError:
                             pass  # 个别条目被删除/不可见，跳过即可
                         except Exception as e:
@@ -423,7 +449,14 @@ class BangumiClient:
                                 _p(0.62 + 0.36 * done / len(need_enrich),
                                    f"补全详情 {done}/{len(need_enrich)} …")
 
-                await asyncio.gather(*[enrich_one(it) for it in need_enrich])
+                tasks = [asyncio.ensure_future(enrich_one(it)) for it in need_enrich]
+                try:
+                    await asyncio.gather(*tasks)
+                except OperationCancelled:
+                    for t in tasks:
+                        t.cancel()
+                    raise
+                self._check_cancel()
 
         result = UserCollection(username=username, total=len(items), items=items)
         if self.cache_enabled:

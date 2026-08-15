@@ -5,9 +5,8 @@
 import asyncio
 import time
 
-from bangumi_catcher.api import _RateLimiter
-from bangumi_catcher.cache import Cache
-
+from bangumi_catcher.core.api import _RateLimiter
+from bangumi_catcher.core.cache import Cache
 
 # ---------------- _RateLimiter ----------------
 

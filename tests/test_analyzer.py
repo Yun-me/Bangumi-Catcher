@@ -1,5 +1,5 @@
 """分析引擎回归测试 —— 锁住"年度均分只统计已评分条目"这一历史 Bug。"""
-from bangumi_catcher.analyzer import analyze
+from bangumi_catcher.core.analyzer import analyze
 
 
 def test_overall_avg_excludes_unrated(sample_collection):
@@ -27,3 +27,10 @@ def test_completion_rate(sample_collection):
     rep = analyze(sample_collection)
     # 4 部看过(100%) + 1 部在看(4/12) 取 type in (2,3)
     assert 0 < rep.avg_completion <= 100
+
+
+def test_tag_stats(sample_collection):
+    rep = analyze(sample_collection)
+    assert rep.tag_counts.get("原创") == 5
+    assert rep.top_tags and rep.top_tags[0].name == "原创"
+    assert rep.top_tags[0].count == 5

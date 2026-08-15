@@ -5,8 +5,8 @@
 后，单条脏数据被就地收敛，不再影响整体。
 """
 import pytest
-from bangumi_catcher.models import CollectionItem, Subject
 
+from bangumi_catcher.core.models import CollectionItem, Subject
 
 # ---------------- CollectionItem ----------------
 

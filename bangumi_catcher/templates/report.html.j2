@@ -56,6 +56,9 @@ footer{text-align:center;color:var(--muted);padding:24px;font-size:13px}
   {% if charts.season_distribution %}
   <div class="card"><h3>追番季度分布</h3><img src="{{ charts.season_distribution }}" alt="季度分布"></div>
   {% endif %}
+  {% if charts.top_tags %}
+  <div class="card"><h3>热门标签 Top 15</h3><img src="{{ charts.top_tags }}" alt="热门标签"></div>
+  {% endif %}
   {% if charts.rating_compare %}
   <div class="card"><h3>我的评分 vs 全站均分</h3><img src="{{ charts.rating_compare }}" alt="评分对比"></div>
   {% endif %}
