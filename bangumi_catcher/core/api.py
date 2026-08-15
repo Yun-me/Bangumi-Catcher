@@ -17,6 +17,7 @@ from typing import Any, Callable
 import httpx
 
 from .cache import Cache
+from .config import AppConfig
 from .exceptions import APIError, EmptyCollectionError, NotFoundError, OperationCancelled, RateLimitError
 from .models import (
     CollectionItem,
@@ -136,32 +137,31 @@ class BangumiClient:
             collection = await client.fetch_collection("用户名")
     """
 
-    def __init__(self, config: dict, cache: Cache | None = None):
-        api_cfg = config.get("api", {})
-        col_cfg = config.get("collection", {})
-        cache_cfg = config.get("cache", {})
+    def __init__(self, config: AppConfig, cache: Cache | None = None):
+        api_cfg = config.api
+        col_cfg = config.collection
+        cache_cfg = config.cache
 
-        self.base_url: str = api_cfg.get("base_url", "https://api.bgm.tv").rstrip("/")
-        self.timeout: float = float(api_cfg.get("timeout", 30))
-        self.max_retries: int = int(api_cfg.get("max_retries", 3))
-        self.retry_delay: float = float(api_cfg.get("retry_delay", 1.0))
-        self.rate_limit_delay: float = float(col_cfg.get("rate_limit_delay", 0.0))
+        self.base_url: str = api_cfg.base_url.rstrip("/")
+        self.timeout: float = api_cfg.timeout
+        self.max_retries: int = api_cfg.max_retries
+        self.retry_delay: float = api_cfg.retry_delay
+        self.proxy: str | None = api_cfg.proxy
+        self.rate_limit_delay: float = col_cfg.rate_limit_delay
+        self.page_limit: int = max(1, min(col_cfg.limit, 50))
         # 并发上限：同时最多 N 个请求；可经 config 调整以适配不同网络/限流策略。
-        self.max_concurrent: int = max(1, int(col_cfg.get("max_concurrent", 8)))
+        self.max_concurrent: int = max(1, col_cfg.max_concurrent)
 
-        self.user_agent: str = api_cfg.get(
-            "user_agent",
-            "bangumi-catcher (https://github.com/Yun-me/Bangumi-Catcher)",
-        )
+        self.user_agent: str = api_cfg.user_agent
 
-        # 缓存：目录 / 有效期 / 开关均可由 config 控制（此前被忽略）。
-        self.cache_enabled: bool = bool(cache_cfg.get("enabled", True))
-        self.cache_ttl: int = int(cache_cfg.get("ttl", 3600))
+        # 缓存：目录 / 有效期 / 开关均可由 config 控制。
+        self.cache_enabled: bool = cache_cfg.enabled
+        self.cache_ttl: int = cache_cfg.ttl
         self._owns_cache = cache is None
         if cache is not None:
             self._cache = cache
         else:
-            cache_dir = cache_cfg.get("dir") or None
+            cache_dir = cache_cfg.dir or None
             self._cache = Cache(directory=cache_dir)
 
         self._rate_limiter = _RateLimiter(self.rate_limit_delay)
@@ -176,6 +176,7 @@ class BangumiClient:
                 "Accept": "application/json",
             },
             follow_redirects=True,
+            proxy=self.proxy,
         )
         return self
 
@@ -309,7 +310,7 @@ class BangumiClient:
         username: str,
         subject_type: int = 2,
         collection_type: int | None = None,
-        limit: int = 50,
+        limit: int | None = None,
         enrich_subjects: bool = True,
         force_refresh: bool = False,
         progress: ProgressCb | None = None,
@@ -350,7 +351,7 @@ class BangumiClient:
                     )
 
         # ---------- 首页（拿到 total）----------
-        limit = max(1, min(int(limit), 50))
+        limit = max(1, min(int(limit if limit is not None else self.page_limit), 50))
         _p(0.05, "连接 Bangumi …")
         self._check_cancel()
         first_data, total = await self._fetch_page(username, subject_type, 0, limit, collection_type)

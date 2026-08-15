@@ -6,7 +6,7 @@
 
 <h1 align="center">Bangumi Catcher</h1>
 
-<p align="center"><strong>Bangumi 用户收藏抓取与可视化分析桌面工具 —— 输入用户 ID，一键生成分析报告</strong></p>
+<p align="center"><strong>Bangumi 用户收藏抓取与可视化分析工具 —— 桌面 GUI + 命令行双模式</strong></p>
 
 ---
 
@@ -14,42 +14,52 @@
 
 | 功能 | 说明 |
 |---|---|
-| 桌面界面 | 基于 **PySide6 (Qt)**，响应式布局，窗口缩放/全屏自动重排，亮/暗双主题 |
-| 实时图表 | matplotlib 画布随窗口实时重绘，且随主题切换自动重着色；评分分布、状态分布、年度趋势、年度均分、季度分布、热门标签、最爱排行等 |
-| 收藏总表 | 全部收藏的可搜索、可排序数据表；支持按收藏状态筛选、双击/右键打开 Bangumi 条目页 |
-| 后台执行 | 抓取/分析在后台线程执行，进度条全程平滑反馈，可随时取消（新增快速中断） |
-| 并发抓取 | httpx 异步并发拉取条目详情，按页偏移并发分页 + 自动重试 + 速率限制 |
-| 本地缓存 | diskcache 持久化，同一用户默认 1 小时内不重复请求；支持「强制刷新」与缓存管理 |
-| 多格式导出 | CSV / JSON / 报告 JSON / 自包含 HTML 报告（可一键在浏览器打开） |
-| 状态记忆 | 自动记住上次用户名、窗口大小与主题偏好 |
+| 双模式 | 现代化 PySide6 桌面界面 + 可脚本化的 CLI 命令行 |
+| 分层架构 | `core`（领域/数据）、`services`（用例编排）、`ui`（界面）三层解耦 |
+| 类型化配置 | Pydantic 配置模型，支持 YAML / 环境变量 / CLI / 设置对话框 |
+| 实时图表 | matplotlib 画布随窗口重绘、主题自适应；评分、状态、年度、季度、标签、排行等 9 类图表 |
+| 收藏总表 | 可搜索、可排序、可按状态筛选；双击/右键打开或复制条目链接 |
+| 后台执行 | QThread + 异步 HTTP，进度平滑反馈，取消响应快速 |
+| 并发抓取 | httpx 异步并发分页 + 自动重试 + 限速 + 代理支持 |
+| 本地缓存 | diskcache 持久化，可配置 TTL/目录，支持强制刷新与缓存管理 |
+| 多格式导出 | CSV / JSON / 报告 JSON / 自包含 HTML 报告 |
+| 工程化 | GitHub Actions CI、ruff、pytest、PyInstaller 打包脚本 |
 
 ---
 
 ## ⚠️ 网络要求
 
-Bangumi（bgm.tv）在中国大陆境内已被 DNS 污染 / SNI 封锁，直接访问会超时或无法连接。**请务必开启系统代理或 VPN 后再使用本工具**，否则抓取会失败。
+Bangumi（bgm.tv）在中国大陆境内可能被 DNS 污染 / SNI 封锁，请开启系统代理或 VPN。
 
-推荐方式：
-- 开启全局代理（如 Clash Verge、v2rayN、sing-box 等），确保 `bgm.tv` 和 `api.bgm.tv` 可访问
-- 或在 `config.yaml` 中配置 `api.base_url` 指向可用的反代地址
+也可以在 GUI「工具 → 设置」或 `config.yaml` 中配置 `api.proxy`：
 
-验证方法：浏览器打开 https://bgm.tv 确认能正常加载。
+```yaml
+api:
+  proxy: "http://127.0.0.1:7890"
+```
 
 ---
 
-## 使用方式
+## 安装与运行
 
-### 下载可执行文件（推荐）
-
-从 [Releases](https://github.com/Yun-me/Bangumi-Catcher/releases) 下载并双击运行，无需安装 Python。
-
-### 从源码运行
+### 从源码
 
 ```bash
 git clone https://github.com/Yun-me/Bangumi-Catcher.git
 cd Bangumi-Catcher
-pip install -r requirements.txt
+pip install -e ".[dev]"
+```
+
+启动 GUI：
+
+```bash
 python -m bangumi_catcher        # 或 python run.py
+```
+
+启动 CLI：
+
+```bash
+python -m bangumi_catcher.cli --help
 ```
 
 ### 自行打包
@@ -61,12 +71,24 @@ python build.py                  # 输出 dist/BangumiCatcher
 
 ---
 
-## 开发
+## CLI 用法
 
 ```bash
-pip install -e ".[dev]"
-pytest -q                        # 运行测试（Qt 用 offscreen，无需显示器）
-ruff check bangumi_catcher       # 代码检查（规则见 pyproject.toml）
+# 查看版本
+python -m bangumi_catcher.cli version
+
+# 抓取并打印摘要
+python -m bangumi_catcher.cli fetch <username>
+
+# 导出 CSV / JSON / 报告 JSON / HTML
+python -m bangumi_catcher.cli fetch <username> --format csv --output collection.csv
+python -m bangumi_catcher.cli fetch <username> --format html --output report.html
+
+# 强制刷新
+python -m bangumi_catcher.cli fetch <username> --force-refresh
+
+# 清空缓存
+python -m bangumi_catcher.cli clear-cache
 ```
 
 ---
@@ -75,25 +97,33 @@ ruff check bangumi_catcher       # 代码检查（规则见 pyproject.toml）
 
 ```
 Bangumi-Catcher/
+├── .github/workflows/ci.yml     # GitHub Actions CI
 ├── bangumi_catcher/
-│   ├── core/                    # 与 UI 无关的核心逻辑
-│   │   ├── api.py               # httpx 异步 API 客户端（并发分页 + 重试 + 缓存 + 取消）
-│   │   ├── analyzer.py          # 多维统计分析引擎（单遍 O(n)）
-│   │   ├── cache.py             # diskcache 缓存层
-│   │   ├── config.py            # 配置（内嵌默认 + YAML + 环境变量覆盖）
+│   ├── core/                    # 领域与数据层
+│   │   ├── api.py               # httpx 异步 API 客户端
+│   │   ├── analyzer.py          # 统计分析引擎
+│   │   ├── cache.py             # diskcache 缓存
+│   │   ├── config.py            # 类型化 Pydantic 配置
 │   │   ├── exceptions.py        # 异常体系
 │   │   ├── export.py            # CSV / JSON 导出
-│   │   └── models.py            # Pydantic v2 数据模型
+│   │   └── models.py            # Pydantic 数据模型
+│   ├── services/                # 用例编排层
+│   │   └── fetch_service.py     # GUI 与 CLI 共用的抓取/分析服务
 │   ├── ui/                      # PySide6 界面层
-│   │   ├── gui.py               # 主窗口（响应式布局 + 后台线程）
-│   │   ├── theme.py             # Qt QSS 主题（亮/暗）
-│   │   ├── flowlayout.py        # 自动换行布局（响应式核心）
-│   │   └── visualizer.py        # matplotlib 图表（GUI 实时 + HTML 导出共用）
+│   │   ├── main_window.py       # 主窗口
+│   │   ├── workers.py           # QThread 后台任务
+│   │   ├── widgets.py           # 可复用组件
+│   │   ├── dialogs.py           # 设置/日志对话框
+│   │   ├── theme.py             # 亮/暗主题
+│   │   ├── flowlayout.py        # 响应式布局
+│   │   ├── visualizer.py        # matplotlib 图表
+│   │   └── gui.py               # GUI 入口（兼容旧路径）
+│   ├── cli.py                   # 命令行入口
 │   ├── templates/               # HTML 报告模板
 │   ├── __init__.py
 │   └── __main__.py
 ├── tests/                       # pytest 测试套件
-├── run.py                       # 打包/开发入口
+├── run.py                       # 开发/打包入口
 ├── build.py                     # PyInstaller 脚本
 ├── config.yaml                  # 可选外部配置
 ├── pyproject.toml
@@ -104,7 +134,7 @@ Bangumi-Catcher/
 
 ## 配置
 
-默认配置已内嵌，开箱即用。如需自定义，在工作目录放置 `config.yaml`，或用环境变量覆盖（嵌套用 `__`）：
+配置为类型化 Pydantic 模型，默认值内嵌，外部 `config.yaml` 可选覆盖，也支持环境变量（嵌套用 `__`）：
 
 ```bash
 export BANGUMI_API__TIMEOUT=60
@@ -112,18 +142,33 @@ export BANGUMI_COLLECTION__MAX_CONCURRENT=4
 export BANGUMI_ANALYSIS__TOP_N=30
 ```
 
-常用项：
+常用配置：
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
+| `api.base_url` | `https://api.bgm.tv` | API 地址 |
 | `api.timeout` | 30 | 单次请求超时（秒） |
+| `api.proxy` | 空 | HTTP 代理地址 |
 | `api.max_retries` | 3 | 失败重试次数 |
-| `api.max_concurrent` | 8 | 最大并发请求数，调小可进一步降低被限流风险 |
-| `collection.rate_limit_delay` | 0.0 | 请求最小发起间隔（秒）。0=不额外限速，仅受 `max_concurrent` 约束；遇到 429 限流时可调到 0.2~0.5 |
-| `cache.enabled` | true | 是否启用本地缓存（关闭则每次重新抓取） |
-| `cache.ttl` | 3600 | 收藏数据缓存有效期（秒） |
+| `collection.max_concurrent` | 8 | 最大并发请求数 |
+| `collection.rate_limit_delay` | 0.0 | 请求最小发起间隔（秒） |
+| `cache.enabled` | true | 是否启用本地缓存 |
+| `cache.ttl` | 3600 | 收藏缓存有效期（秒） |
 | `cache.dir` | "" | 缓存目录，留空 = `~/.cache/bangumi-catcher` |
-| `analysis.top_n` | 20 | 「最爱排行 / 热门标签」展示数量 |
+| `analysis.top_n` | 20 | 最爱排行 / 热门标签数量 |
+| `ui.theme` | `system` | `system` / `light` / `dark` |
+
+---
+
+## 开发
+
+```bash
+pip install -e ".[dev]"
+pytest -q
+ruff check bangumi_catcher tests
+```
+
+GitHub Actions 会在每次 push/PR 自动执行 lint + test + CLI smoke。
 
 ---
 

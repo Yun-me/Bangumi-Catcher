@@ -7,6 +7,7 @@ api:
   timeout: 30          # 单请求超时（秒）
   max_retries: 3       # 网络/5xx/429 的最大重试次数
   retry_delay: 1.0     # 重试基础退避（秒，随次数递增）
+  proxy: ""            # HTTP 代理，如 http://127.0.0.1:7890；留空为直连
 
 collection:
   subject_type: 2      # 1=书籍 2=动画 3=音乐 4=游戏 6=三次元
@@ -30,3 +31,7 @@ export:
   output_dir: "output"
   csv_encoding: "utf-8-sig"  # 带 BOM，Excel 直接打开不乱码
   json_indent: 2
+
+ui:
+  theme: "system"      # system / light / dark
+  max_recent_users: 8
