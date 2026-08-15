@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-qt>=4", "ruff>=0.5", "pyinstaller>=6"]
+dev = ["pytest>=8", "ruff>=0.5", "pyinstaller>=6"]
 
 [project.scripts]
 bangumi-catcher = "bangumi_catcher.ui.gui:main"
