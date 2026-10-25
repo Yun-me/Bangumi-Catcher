@@ -1,0 +1,18 @@
+---
+description: Bangumi Catcher repository rules
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Bangumi Catcher agent rules
+
+The canonical guide is [AGENTS.md](../../AGENTS.md). Read it before editing.
+
+Non-negotiables:
+
+- Tests are offline; use `tests/fakes.py` and `tests/factories.py`.
+- Keep the dependency direction enforced by `tests/architecture/test_layers.py`.
+- Never import Matplotlib at module scope in `src/bangumi_catcher/ui/`.
+- Exports go through `reporting.atomic_output` (no partial files).
+- Remote collections are read-only.
+- Definition of done: `python scripts/dev.py check`.

@@ -1,26 +1,75 @@
-"""共享 fixtures：构造一个小型 UserCollection 供测试使用。"""
+"""Shared fixtures and test isolation.
+
+Every test runs offline: proxy variables and ``BANGUMI_*`` overrides are
+removed, the repository/user configuration files are redirected into ``tmp_path``
+and the real HTTP transport is replaced with a guard that raises. Tests that
+genuinely need the network must opt in with ``@pytest.mark.network``.
+"""
+
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
 
-from bangumi_catcher.core.models import (
-    CollectionItem,
-    RatingInfo,
-    Subject,
-    UserCollection,
-)
+from tests.factories import make_sample_collection
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+_PROXY_VARIABLES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 
 
 @pytest.fixture(autouse=True)
-def isolated_user_config(tmp_path, monkeypatch):
-    monkeypatch.setattr("bangumi_catcher.core.config.user_config_path", lambda: tmp_path / "preferences.yaml")
+def isolated_environment(monkeypatch, tmp_path):
+    """Make configuration discovery and HTTP behaviour deterministic."""
+    for name in _PROXY_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    for name in [key for key in os.environ if key.startswith("BANGUMI_")]:
+        monkeypatch.delenv(name, raising=False)
+
+    from bangumi_catcher.core.config import paths
+
+    monkeypatch.setattr(paths, "working_dir_config_path", lambda cwd=None: tmp_path / "config.yaml")
+    monkeypatch.setattr(paths, "repository_config_path", lambda: None)
+    monkeypatch.setattr(paths, "user_config_path", lambda: tmp_path / "preferences.yaml")
+
+
+@pytest.fixture(autouse=True)
+def block_real_http(request, monkeypatch):
+    """Fail loudly if a test tries to open a real HTTP connection."""
+    if request.node.get_closest_marker("network"):
+        return
+    import httpx
+
+    def deny(self, request):
+        raise RuntimeError("tests must not use the network; inject a fake transport")
+
+    async def deny_async(self, request):
+        raise RuntimeError("tests must not use the network; inject a fake transport")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", deny)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", deny_async)
+
+
+@pytest.fixture
+def sample_collection():
+    """Five deterministic entries covering finished/wish/watching states."""
+    return make_sample_collection()
 
 
 @pytest.fixture(scope="session")
 def qapp():
+    """One offscreen ``QApplication`` shared by all UI tests."""
     from PySide6 import QtGui, QtWidgets
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -32,23 +81,3 @@ def qapp():
             if path.exists():
                 QtGui.QFontDatabase.addApplicationFont(str(path))
     return app
-
-
-def _item(sid, ctype, rate, year, score, eps=12, ep_status=12):
-    subj = Subject(id=sid, name=f"Anime{sid}", name_cn=f"动画{sid}",
-                   date=f"{year}-04-05", eps=eps, total_episodes=eps,
-                   rating=RatingInfo(score=score))
-    return CollectionItem(subject_id=sid, subject=subj, type=ctype, rate=rate,
-                          ep_status=ep_status, tags=["原创"])
-
-
-@pytest.fixture
-def sample_collection():
-    items = [
-        _item(1, 2, 8, 2020, 7.5),
-        _item(2, 2, 0, 2020, 8.0),   # 看过但未评分
-        _item(3, 2, 6, 2021, 6.5),
-        _item(4, 1, 0, 2021, 7.0),   # 想看
-        _item(5, 3, 0, 2022, 8.2, ep_status=4),  # 在看
-    ]
-    return UserCollection(username="tester", total=len(items), items=items)

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 开发指南 / 架构
+    url: https://github.com/Yun-me/Bangumi-Catcher/blob/main/AGENTS.md
+    about: 提交代码前请先阅读开发指南与 docs/。
+  - name: Bangumi API 文档
+    url: https://bangumi.github.io/api/
+    about: 数据来源与接口说明。

@@ -1,42 +1,42 @@
-# Python
+# --- Python -----------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *.egg-info/
 *.egg
-dist/
-build/
-*.so
-*.dylib
 .Python
 env/
 venv/
 .venv/
 pip-wheel-metadata/
+
+# --- Packaging / build artefacts -------------------------------------------
+build/
+dist/
 *.spec
 
-# IDE
+# --- Test, lint and type-check caches --------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Project outputs (runtime data, never committed) ------------------------
+output/
+reports/
+*.log
+
+# --- Local configuration overrides ------------------------------------------
+config.local.yaml
+config.local.yml
+
+# --- IDE / OS ---------------------------------------------------------------
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Project outputs
-output/
-reports/
-
-# Cache
-.cache/
-*.cache
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# PyInstaller
-*.spec
-dist/
-build/

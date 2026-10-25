@@ -1,9 +1,18 @@
-"""开发/打包统一入口：python run.py。
+"""Development entry point: ``python run.py``.
 
-PyInstaller 以本文件为入口可避免"相对导入作为 __main__ 失败"的问题。
+Adds ``src/`` to ``sys.path`` so the desktop can be launched from a checkout
+without installing the package first. The canonical entry point remains
+``python -m bangumi_catcher`` after ``pip install -e .``.
 """
 
-from bangumi_catcher.ui.gui import main
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+
+from bangumi_catcher.ui.app import main  # noqa: E402
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

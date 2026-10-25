@@ -1,0 +1,14 @@
+{
+  "id": 101,
+  "name": "Sousou no Frieren",
+  "name_cn": "葬送的芙莉莲",
+  "date": "2023-09-29",
+  "score": 8.8,
+  "rank": 12,
+  "eps": 28,
+  "short_summary": "勇者一行击败魔王之后的故事。",
+  "images": {
+    "large": "https://example.invalid/frieren/large.jpg",
+    "common": "https://example.invalid/frieren/common.jpg"
+  }
+}

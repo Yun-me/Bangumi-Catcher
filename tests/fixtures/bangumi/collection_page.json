@@ -1,0 +1,51 @@
+{
+  "total": 101,
+  "limit": 2,
+  "offset": 0,
+  "data": [
+    {
+      "subject_id": 101,
+      "type": 2,
+      "rate": 9,
+      "comment": "年度最佳",
+      "tags": [
+        {"name": "奇幻"},
+        {"name": "治愈"}
+      ],
+      "ep_status": 28,
+      "vol_status": 0,
+      "updated_at": "2024-03-31T12:00:00+08:00",
+      "private": false,
+      "subject": {
+        "id": 101,
+        "name": "Sousou no Frieren",
+        "name_cn": "葬送的芙莉莲",
+        "date": "2023-09-29",
+        "score": 8.8,
+        "rank": 12,
+        "eps": 28,
+        "short_summary": "勇者一行击败魔王之后的故事。"
+      }
+    },
+    {
+      "subject_id": 102,
+      "type": 3,
+      "rate": 0,
+      "comment": "",
+      "tags": [],
+      "ep_status": 4,
+      "vol_status": 0,
+      "updated_at": "2024-04-02T12:00:00+08:00",
+      "private": false,
+      "subject": {
+        "id": 102,
+        "name": "Dungeon Meshi",
+        "name_cn": "迷宫饭",
+        "date": "2024-01-04",
+        "score": 8.4,
+        "rank": 30,
+        "eps": 24
+      }
+    }
+  ]
+}

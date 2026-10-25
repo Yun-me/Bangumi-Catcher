@@ -6,6 +6,71 @@
 
 <!-- 下一个版本的变更请记录在此处。 -->
 
+## [4.0.0] - 2026-10-25
+
+> **结构性重构版本。** 用户功能保持连续；内部导入路径、目录布局与开发命令有
+> 破坏性变化，升级前请阅读 [docs/migration-4.0.md](docs/migration-4.0.md)。
+
+### 架构
+
+- 迁移到 `src/` 布局，测试与安装使用同一份代码，打包问题提前暴露。
+- `core` 拆分为 `models/`、`config/`、`analysis.py`、`query.py`、`errors.py`，
+  保持纯领域层，不依赖 HTTP/Qt/绘图。
+- 新增顶层 `api/`（client / collection / mapping / pagination / cache / ratelimit），
+  取代 `core/api.py` 与 `core/cache.py`。
+- 新增顶层 `charts/`（catalog / theme / builders / render），把绘图从 UI 中剥离；
+  `charts.catalog` 不导入 Matplotlib，UI 启动仍然轻量。
+- 新增顶层 `reporting/`（CSV / JSON / HTML / atomic），把导出从 `core/export.py`
+  与 `services/export_service.py` 中拆出。
+- `services/` 不再依赖 `ui`；HTML 导出可在无 Qt 的 CLI/CI 中运行。
+- 表格搜索、筛选、排序语义下沉到 `core/query.py`，Qt 模型只负责缓存与映射。
+- UI 拆分 `sidebar.py`、`fetch_bar.py`、`detail_panel.py`、`log_dialog.py`；
+  `main_window` 只保留外壳、菜单、页面生命周期与任务编排。
+
+### Agent 友好的工程结构
+
+- 新增 `AGENTS.md` 作为唯一权威开发说明；`CLAUDE.md`、`.cursor/rules/project.mdc`、
+  `.github/copilot-instructions.md` 为短指针，避免多份规则漂移。
+- 新增 `docs/`：架构、开发、测试、约定、数据口径、配置、打包、迁移、playbooks、
+  ADR；`docs/README.md` 为索引。
+- 新增跨平台任务入口 `scripts/dev.py`（无第三方依赖）与 `Makefile` 包装：
+  `setup/fmt/lint/type/test/cov/check/run/cli/build/package/smoke/clean`。
+- 新增 `.pre-commit-config.yaml`、`.gitattributes`，完善 `.gitignore` 与
+  `.editorconfig`。
+- 测试重组为 `unit/core`、`unit/api`、`unit/charts`、`unit/reporting`、
+  `integration`、`ui`、`architecture`。
+- 新增离线测试基础设施：`tests/fakes.py`（异步 `FakeBangumiAPI`）、
+  `tests/factories.py`、`tests/fixtures/bangumi/*.json`、全局网络守卫与配置隔离。
+- 新增架构守卫测试（AST 解析 import 方向）、文档链接测试、打包元数据测试。
+- 启用 ruff 更多规则与 `ruff format`；新增 scoped mypy 配置并修至零错误。
+- CI 扩展为 quality / test（Windows+Linux × 3.9/3.13）/ package 三组；
+  新增 tag 触发的 release workflow、issue 模板、PR 模板与 Dependabot。
+
+### 新增
+
+- CLI `config` 子命令：输出合并后的有效配置（YAML / JSON）。
+- CLI 全局 `-v/--verbose`、`--log-file`。
+- `logging.level` 与 `logging.file` 配置；GUI 设置中可编辑日志级别与文件。
+- `api.trust_env`：可关闭环境代理读取，规避异常 `NO_PROXY` 导致 httpx 初始化失败。
+- `BANGUMI_CONFIG` 环境变量：显式指定配置文件，优先级等同 `--config`。
+- `BangumiClient(..., transport=...)`：可注入 `httpx` transport，便于离线测试。
+
+### 变更
+
+- 版本号提升至 4.0.0；`requirements.txt` 删除，统一使用 `pyproject.toml`。
+- 根目录 `build.py` 已删除（它会遮蔽 `python -m build`）；打包统一使用
+  `python scripts/dev.py package` 或 `scripts/build.py`。
+- 季度统计不再包含无日期条目产生的空季度。
+- 收藏条目缺少 `subject_id` 时回退到内联 `subject.id`。
+- 公开入口：`bangumi_catcher.ui.app:main`、`bangumi_catcher.cli:main`。
+- 打包默认仍为目录版；PyInstaller 入口为 `scripts/launch_gui.py`，构建时加入 `src`。
+
+### 修复
+
+- 测试不再依赖开发者机器的代理环境（此前异常 `NO_PROXY` 会让 3 个生命周期测试失败）。
+- 测试不再替换 `BangumiClient._client` 私有属性，重构更安全。
+- 抓取失败/取消后的并发任务清理与缓存写入有更明确的回归覆盖。
+
 ## [3.0.0] - 2026-09-06
 
 ### 桌面工作台

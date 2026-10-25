@@ -1,0 +1,18 @@
+{
+  "id": 101,
+  "name": "Sousou no Frieren",
+  "name_cn": "葬送的芙莉莲",
+  "date": "2023-09-29",
+  "platform": "TV",
+  "summary": "勇者一行击败魔王之后的故事。",
+  "eps": 28,
+  "total_episodes": 28,
+  "rating": {
+    "score": 8.8,
+    "total": 12000,
+    "rank": 12
+  },
+  "images": {
+    "large": "https://example.invalid/frieren/large.jpg"
+  }
+}
