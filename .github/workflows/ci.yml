@@ -46,7 +46,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Pin Ubuntu 24.04: ubuntu-latest moved to 26.04, where setup-python
+        # has no prebuilt Python 3.9. Windows provides 3.9 natively.
+        os: [ubuntu-24.04, windows-latest]
         python-version: ["3.9", "3.13"]
     env:
       QT_QPA_PLATFORM: "offscreen"
