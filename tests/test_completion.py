@@ -58,3 +58,10 @@ def test_watching_zero_progress_is_zero():
 def test_completion_without_subject_safe():
     it = CollectionItem(subject_id=1, type=3, ep_status=5, subject=None)
     assert it.completion_rate == 0.0
+
+
+def test_wish_with_old_episode_progress_is_still_unstarted():
+    from bangumi_catcher.core.models import CollectionItem, Subject
+
+    item = CollectionItem(subject_id=1, subject=Subject(id=1, eps=12), type=1, ep_status=6)
+    assert item.completion_rate == 0.0

@@ -1,140 +1,103 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/GUI-PySide6-41CD52" alt="PySide6">
-  <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
-</p>
+# Bangumi Catcher
 
-<h1 align="center">Bangumi Catcher</h1>
+**本地优先的 Bangumi 收藏工作台。同步、整理、回顾，让收藏不止于列表。**
 
-<p align="center"><strong>Bangumi 用户收藏抓取与可视化分析工具 —— 桌面 GUI + 命令行双模式</strong></p>
+PySide6 桌面界面 + 可脚本化 CLI，兼容 Python 3.9+。无需账号密码，不修改远程收藏。
 
----
+## 3.0 带来了什么
 
-## 特性
+- **重新设计的桌面**：固定侧栏、森绿浅色 / 夜间主题、跟随系统外观，以及真正可用的空状态。
+- **收藏概览**：收藏与评分指标、状态分布、高分作品、最近更新和兴趣标签；点击状态或标签即可继续筛选。
+- **高效收藏库**：虚拟表格不再逐格创建 Qt 对象，批量排序行索引而非逐次跨 Qt 比较；搜索带 160 ms 防抖，支持原名、中文名、ID、标签、短评及多个关键词的交集。
+- **组合筛选与详情**：状态、发行年份、已评分 / 未评分、最低分组合过滤；数值排序、作品详情、进度、标签和短评；可单独导出筛选结果。
+- **离线快照**：导入旧版 / 新版收藏 JSON，不联网即可查看和重新分析。报告 JSON 不作为收藏快照导入。
+- **按需分析**：9 个图表维度只在查看时后台生成，同一数据与主题内缓存复用；支持 PNG 保存。启动和浏览收藏不加载 Matplotlib。
+- **可靠后台任务**：抓取、分析、导入、导出均放到工作线程；取消可中断正在等待的 HTTP / 重试；退出等待任务安全结束，不强杀线程。
+- **统一导出**：CSV、收藏 JSON、报告 JSON、自包含 HTML；GUI / CLI 共用实现。临时文件成功生成后才替换目标，失败不覆盖旧文件。
+- **便捷入口**：主页链接识别、最近用户、自动补全、常用快捷键、实时日志、可写用户目录中的偏好设置。
 
-| 功能 | 说明 |
+原来的分页并发、持久缓存、代理、年度统计、高分排行和命令行功能仍然保留，没有引入浏览器壳或新的运行时依赖。
+
+## 安装与运行
+
+在项目目录执行：
+
+```bash
+pip install -e ".[dev]"
+python -m bangumi_catcher
+# 也可以使用 python run.py
+```
+
+Windows 上如果 `python` 不在 PATH，可以使用已安装的 Python 完整路径，或可用的 `py -3` 启动器。
+
+### 第一次使用
+
+1. 输入 **用户名 / 数字 UID / 用户主页链接**，例如 `https://bgm.tv/user/yourname`。显示昵称不是用户名。
+2. 选择动画、书籍、音乐、游戏或三次元，然后点击「同步收藏」。
+3. 从侧栏进入收藏、洞察、排行或年度；使用「作品详情」展开详情面板。
+4. 「导出报告」导出完整数据；收藏页的「导出筛选结果」只导出当前匹配的行，保持当前排序。
+5. 以后使用「导入」打开收藏 JSON，即可离线回顾。旧快照未包含分类时显示“未标注分类”，不会猜测分类。
+
+### 快捷键
+
+| 按键 | 操作 |
 |---|---|
-| 双模式 | 现代化 PySide6 桌面界面 + 可脚本化的 CLI 命令行 |
-| 分层架构 | `core`（领域/数据）、`services`（用例编排）、`ui`（界面）三层解耦 |
-| 类型化配置 | Pydantic 配置模型，支持 YAML / 环境变量 / CLI / 设置对话框 |
-| 实时图表 | matplotlib 画布随窗口重绘、主题自适应；评分、状态、年度、季度、标签、排行等 9 类图表 |
-| 收藏总表 | 可搜索、可排序、可按状态筛选；双击/右键打开或复制条目链接 |
-| 后台执行 | QThread + 异步 HTTP，进度平滑反馈，取消响应快速 |
-| 并发抓取 | httpx 异步并发分页 + 自动重试 + 限速 + 代理支持 |
-| 本地缓存 | diskcache 持久化，可配置 TTL/目录，支持强制刷新与缓存管理 |
-| 多格式导出 | CSV / JSON / 报告 JSON / 自包含 HTML 报告 |
-| 工程化 | GitHub Actions CI、ruff、pytest、PyInstaller 打包脚本 |
+| `F5` / 用户输入框中的 `Enter` | 同步收藏 |
+| `Ctrl+F` | 进入收藏并聚焦搜索 |
+| `Ctrl+O` | 导入收藏 JSON |
+| `Ctrl+S` | 导出完整收藏 CSV |
+| `Ctrl+D` | 切换亮 / 暗主题 |
+| `Ctrl+,` | 偏好设置 |
+| `Ctrl+Q` | 安全退出 |
 
----
+## 命令行
 
-## ⚠️ 网络要求
+```bash
+python -m bangumi_catcher.cli --help
+python -m bangumi_catcher.cli version
 
-Bangumi（bgm.tv）在中国大陆境内可能被 DNS 污染 / SNI 封锁，请开启系统代理或 VPN。
+# 在线同步；用户名也可以替换为用户主页 URL
+python -m bangumi_catcher.cli fetch yourname --subject-type 2
+python -m bangumi_catcher.cli fetch yourname --force-refresh
+python -m bangumi_catcher.cli fetch yourname --format json -o collection.json
+python -m bangumi_catcher.cli fetch yourname --format html -o reports/bangumi.html
 
-也可以在 GUI「工具 → 设置」或 `config.yaml` 中配置 `api.proxy`：
+# 完全离线：读取快照并重新分析 / 转换格式
+python -m bangumi_catcher.cli analyze collection.json
+python -m bangumi_catcher.cli analyze collection.json --format csv -o collection.csv
+python -m bangumi_catcher.cli analyze collection.json --format html -o report.html
+
+python -m bangumi_catcher.cli clear-cache
+```
+
+`fetch` / `analyze` 都支持 `--format none|csv|json|report-json|html`、`--output`、`--config`、`--quiet`。
+未指定输出路径时保存到配置的 `export.output_dir`，例如 `output/yourname_collection.json`。
+出错返回非零退出码并打印错误说明；不会把已有文件覆盖成半份报告。
+
+## 设置与网络
+
+偏好设置分为外观、网络、数据与分析三个页面。网络不可达时可配置 HTTP 代理：
 
 ```yaml
 api:
   proxy: "http://127.0.0.1:7890"
+collection:
+  max_concurrent: 8
+  rate_limit_delay: 0.2
 ```
 
----
+代理留空时由 HTTPX 使用环境代理设置。遇到限流时可降低并发、增加最小请求间隔。
 
-## 安装与运行
+配置合并顺序：内置默认 → 项目 `config.yaml` → 用户偏好 → 程序化覆盖 → 环境变量。
+显式提供 `--config` 时仅加载该文件与内置默认，再应用环境变量；路径不存在会报错。
 
-### 从源码
+GUI 保存设置不再覆写源码 / 安装目录下的配置，而是写入：
 
-```bash
-git clone https://github.com/Yun-me/Bangumi-Catcher.git
-cd Bangumi-Catcher
-pip install -e ".[dev]"
-```
+- Windows：`%APPDATA%/bangumi-catcher/config.yaml`
+- macOS：`~/Library/Application Support/bangumi-catcher/config.yaml`
+- Linux：`${XDG_CONFIG_HOME:-~/.config}/bangumi-catcher/config.yaml`
 
-启动 GUI：
-
-```bash
-python -m bangumi_catcher        # 或 python run.py
-```
-
-启动 CLI：
-
-```bash
-python -m bangumi_catcher.cli --help
-```
-
-### 自行打包
-
-```bash
-pip install pyinstaller
-python build.py                  # 输出 dist/BangumiCatcher
-```
-
----
-
-## CLI 用法
-
-```bash
-# 查看版本
-python -m bangumi_catcher.cli version
-
-# 抓取并打印摘要
-python -m bangumi_catcher.cli fetch <username>
-
-# 导出 CSV / JSON / 报告 JSON / HTML
-python -m bangumi_catcher.cli fetch <username> --format csv --output collection.csv
-python -m bangumi_catcher.cli fetch <username> --format html --output report.html
-
-# 强制刷新
-python -m bangumi_catcher.cli fetch <username> --force-refresh
-
-# 清空缓存
-python -m bangumi_catcher.cli clear-cache
-```
-
----
-
-## 项目结构
-
-```
-Bangumi-Catcher/
-├── .github/workflows/ci.yml     # GitHub Actions CI
-├── bangumi_catcher/
-│   ├── core/                    # 领域与数据层
-│   │   ├── api.py               # httpx 异步 API 客户端
-│   │   ├── analyzer.py          # 统计分析引擎
-│   │   ├── cache.py             # diskcache 缓存
-│   │   ├── config.py            # 类型化 Pydantic 配置
-│   │   ├── exceptions.py        # 异常体系
-│   │   ├── export.py            # CSV / JSON 导出
-│   │   └── models.py            # Pydantic 数据模型
-│   ├── services/                # 用例编排层
-│   │   └── fetch_service.py     # GUI 与 CLI 共用的抓取/分析服务
-│   ├── ui/                      # PySide6 界面层
-│   │   ├── main_window.py       # 主窗口
-│   │   ├── workers.py           # QThread 后台任务
-│   │   ├── widgets.py           # 可复用组件
-│   │   ├── dialogs.py           # 设置/日志对话框
-│   │   ├── theme.py             # 亮/暗主题
-│   │   ├── flowlayout.py        # 响应式布局
-│   │   ├── visualizer.py        # matplotlib 图表
-│   │   └── gui.py               # GUI 入口（兼容旧路径）
-│   ├── cli.py                   # 命令行入口
-│   ├── templates/               # HTML 报告模板
-│   ├── __init__.py
-│   └── __main__.py
-├── tests/                       # pytest 测试套件
-├── run.py                       # 开发/打包入口
-├── build.py                     # PyInstaller 脚本
-├── config.yaml                  # 可选外部配置
-├── pyproject.toml
-└── requirements.txt
-```
-
----
-
-## 配置
-
-配置为类型化 Pydantic 模型，默认值内嵌，外部 `config.yaml` 可选覆盖，也支持环境变量（嵌套用 `__`）：
+示例环境变量：
 
 ```bash
 export BANGUMI_API__TIMEOUT=60
@@ -142,40 +105,67 @@ export BANGUMI_COLLECTION__MAX_CONCURRENT=4
 export BANGUMI_ANALYSIS__TOP_N=30
 ```
 
-常用配置：
+窗口大小、最近用户、最后分类和手动主题选择仍使用 Qt 的本地应用设置。设置里的主题选择会同步更新手动选择；环境变量配置在下次启动时重新读取。
+缓存目录保持兼容：默认 `~/.cache/bangumi-catcher`，可在设置中修改。清缓存不会删除当前收藏、快照或导出文件。
 
-| 配置项 | 默认值 | 说明 |
-|---|---|---|
-| `api.base_url` | `https://api.bgm.tv` | API 地址 |
-| `api.timeout` | 30 | 单次请求超时（秒） |
-| `api.proxy` | 空 | HTTP 代理地址 |
-| `api.max_retries` | 3 | 失败重试次数 |
-| `collection.max_concurrent` | 8 | 最大并发请求数 |
-| `collection.rate_limit_delay` | 0.0 | 请求最小发起间隔（秒） |
-| `cache.enabled` | true | 是否启用本地缓存 |
-| `cache.ttl` | 3600 | 收藏缓存有效期（秒） |
-| `cache.dir` | "" | 缓存目录，留空 = `~/.cache/bangumi-catcher` |
-| `analysis.top_n` | 20 | 最爱排行 / 热门标签数量 |
-| `ui.theme` | `system` | `system` / `light` / `dark` |
+## 数据口径与边界
 
----
+- 总均分 / 年度均分只统计“看过”且评分大于 0 的作品，未评分不视为 0 分。
+- 平均完成率统计“看过”和“在看”；看过为 100%，在看按已记录集数计算。
+- 年度统计按作品发行年份，不是用户收藏日期。统计范围在设置中调整，保存后后台重新分析。
+- 图表展示完整载入数据；收藏页的筛选不会偷偷改变完整报告的统计口径。
+- 收藏 JSON 支持最大 64 MB，保留作品、评分、标签、短评、进度和时间；CSV 额外保留标签、卷数，并将疑似公式文本转为普通文本。
+- 本应用是只读工具；不会修改远程收藏，也不会绕过未授权的私有收藏访问限制。网络失败 / 导入失败 / 取消任务会保留上一份已载入数据。
+- HTML 报告内嵌全部图表，没有外部脚本或字体依赖，可离线浏览与打印。
 
-## 开发
+## 项目结构
 
-```bash
-pip install -e ".[dev]"
-pytest -q
-ruff check bangumi_catcher tests
+```text
+bangumi_catcher/
+  core/                  数据模型、配置、缓存、API、分析与序列化
+  services/
+    fetch_service.py     在线同步与分析编排
+    library_service.py   用户输入规范化、离线快照读取
+    export_service.py    GUI / CLI 共用的原子导出
+    task_service.py      异步任务取消
+  ui/
+    main_window.py       工作台外壳、导航与数据生命周期
+    overview_page.py     轻量原生概览
+    library_page.py      收藏浏览与详情
+    collection_model.py 虚拟表格与组合筛选
+    chart_page.py        按需图表调度与缓存
+    report_page.py       排行与年度表格
+    workers.py           统一后台任务及线程生命周期
+    dialogs.py           偏好设置和实时日志
+    theme.py / icons.py  样式令牌与矢量图标
+    visualizer.py        线程串行化的 Agg 绘图入口
+  templates/             自包含 HTML 报告
+  cli.py                 在线 / 离线命令行
+tests/                   领域、网络生命周期、导出和无显示器 GUI 回归
 ```
 
-GitHub Actions 会在每次 push/PR 自动执行 lint + test + CLI smoke。
+## 测试与打包
 
----
+```bash
+pytest -q
+ruff check bangumi_catcher tests
+python build.py
+```
 
-## 致谢
+测试默认使用 Qt `offscreen`，不要求显示器，也不依赖 `pytest-qt`。网络测试使用 HTTPX 模拟传输，不调用真实 Bangumi。
+CI 覆盖 Windows / Linux、Python 3.9 / 3.12。
 
-数据来源：[Bangumi 番组计划](https://bgm.tv) · 请遵守其 API 使用条款与频率限制。
+默认目录打包，避免单文件版本每次启动解压 Qt 与绘图库：
 
-## License
+```text
+dist/BangumiCatcher/BangumiCatcher.exe   # Windows
+dist/BangumiCatcher/BangumiCatcher       # Linux / macOS
+```
 
-MIT © Bangumi Catcher Contributors
+需要单文件分发时使用 `python build.py --onefile`，输出到 `dist/`；目录版分发时请保留整个文件夹。
+
+## 致谢与许可
+
+数据来源于 [Bangumi 番组计划](https://bgm.tv)。请合理设置请求频率，遵守其 API 使用约定。
+
+MIT，详见 [LICENSE](LICENSE)。

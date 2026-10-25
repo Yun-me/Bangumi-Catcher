@@ -34,3 +34,11 @@ def test_tag_stats(sample_collection):
     assert rep.tag_counts.get("原创") == 5
     assert rep.top_tags and rep.top_tags[0].name == "原创"
     assert rep.top_tags[0].count == 5
+
+
+def test_default_year_range_includes_current_year(sample_collection):
+    from datetime import datetime
+
+    current_year = datetime.now().year
+    sample_collection.items[0].subject.date = f"{current_year}-01-01"
+    assert current_year in analyze(sample_collection).by_year

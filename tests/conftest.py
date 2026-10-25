@@ -1,4 +1,7 @@
 """共享 fixtures：构造一个小型 UserCollection 供测试使用。"""
+import os
+from pathlib import Path
+
 import pytest
 
 from bangumi_catcher.core.models import (
@@ -7,6 +10,28 @@ from bangumi_catcher.core.models import (
     Subject,
     UserCollection,
 )
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_config(tmp_path, monkeypatch):
+    monkeypatch.setattr("bangumi_catcher.core.config.user_config_path", lambda: tmp_path / "preferences.yaml")
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    from PySide6 import QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app.setQuitOnLastWindowClosed(False)
+    app.setStyle("Fusion")
+    if not QtGui.QFontDatabase.families():
+        for name in ("msyh.ttc", "msyhbd.ttc", "segoeui.ttf", "seguisb.ttf"):
+            path = Path("C:/Windows/Fonts") / name
+            if path.exists():
+                QtGui.QFontDatabase.addApplicationFont(str(path))
+    return app
 
 
 def _item(sid, ctype, rate, year, score, eps=12, ep_status=12):

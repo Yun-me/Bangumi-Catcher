@@ -192,6 +192,8 @@ class CollectionItem(BaseModel):
         """
         if self.type == 2:  # 看过
             return 1.0
+        if self.type == 1:
+            return 0.0
         total = self.subject.episodes_total if self.subject else 0
         if total > 0 and self.ep_status > 0:
             return min(self.ep_status / total, 1.0)
@@ -200,6 +202,7 @@ class CollectionItem(BaseModel):
 
 class UserCollection(BaseModel):
     username: str
+    subject_type: int | None = None
     total: int = 0
     items: list[CollectionItem] = Field(default_factory=list)
     fetched_at: str = Field(default_factory=lambda: datetime.now().isoformat())

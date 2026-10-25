@@ -8,6 +8,7 @@ from ..core.analyzer import analyze
 from ..core.api import BangumiClient
 from ..core.config import AppConfig
 from ..core.models import AnalysisReport, UserCollection
+from .library_service import normalize_username
 
 ProgressCb = Callable[[float, str], None]
 CancelCheck = Callable[[], bool]
@@ -23,6 +24,7 @@ async def fetch_user_collection(
 ) -> UserCollection:
     """抓取单个用户的收藏列表（可选进度与取消回调）。"""
     st = subject_type or config.collection.subject_type
+    username = normalize_username(username)
     async with BangumiClient(config) as client:
         return await client.fetch_collection(
             username,

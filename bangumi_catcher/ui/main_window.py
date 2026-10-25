@@ -1,551 +1,504 @@
-"""Bangumi Catcher —— PySide6 (Qt) 现代化桌面主窗口.
-
-v2.0 将主窗口从单一 gui.py 拆出：后台任务、可复用组件、对话框均独立成模块。
-"""
+"""Desktop shell: navigation, dataset lifecycle and user actions."""
 
 from __future__ import annotations
 
-import webbrowser
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import __version__
-from ..core.config import load_config
-from ..core.export import collection_to_csv, collection_to_json, report_to_json
+from ..core.config import AppConfig, load_config
 from ..core.models import AnalysisReport, UserCollection
+from ..services.export_service import export_dataset
+from ..services.fetch_service import analyze_user_collection, fetch_and_analyze
+from ..services.library_service import SUBJECT_TYPES, load_collection, normalize_username
+from ..services.task_service import check_cancelled, run_cancellable
+from .chart_page import ChartPage
 from .dialogs import LogDialog, SettingsDialog
-from .flowlayout import FlowLayout
+from .icons import icon
+from .library_page import LibraryPage
+from .overview_page import OverviewPage
+from .report_page import ReportPage
 from .theme import Palette, build_stylesheet
-from .visualizer import CHART_TITLES, build_figures, render_all
-from .widgets import ChartCard, SearchProxy, StatCard, progress_label
-from .workers import FetchWorker
+from .widgets import Card, label
+from .workers import TaskRunner
 
 APP_NAME = "Bangumi Catcher"
 APP_VERSION = __version__
-TYPE_MAP = {"动画": 2, "书籍": 1, "音乐": 3, "游戏": 4, "三次元": 6}
+PAGES = [("收藏概览", "OVERVIEW", "home"), ("我的收藏", "LIBRARY", "library"),
+         ("数据洞察", "INSIGHTS", "chart"), ("高分排行", "FAVORITES", "star"),
+         ("年度回顾", "TIMELINE", "calendar")]
 
 
-# ============================================================ 主窗口
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, config: AppConfig | None = None, settings: QtCore.QSettings | None = None):
         super().__init__()
-        self.settings = QtCore.QSettings(APP_NAME, APP_NAME)
-        theme_pref = load_config().ui.theme
-        if theme_pref == "dark":
-            self.dark = True
-        elif theme_pref == "light":
-            self.dark = False
-        else:
-            self.dark = self.settings.value("dark", False, type=bool)
+        self.config = config if config is not None else load_config()
+        self.settings = settings if settings is not None else QtCore.QSettings(APP_NAME, APP_NAME)
+        self.theme_preference = self.settings.value("theme", self.config.ui.theme, type=str)
+        if not self.settings.contains("theme") and self.settings.contains("dark") and self.config.ui.theme == "system":
+            self.theme_preference = "dark" if self.settings.value("dark", False, type=bool) else "light"
         self.collection: UserCollection | None = None
         self.report: AnalysisReport | None = None
-        self._charts_uri: dict[str, str] = {}
-        self._thread: QtCore.QThread | None = None
-        self._worker: FetchWorker | None = None
-
-        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.resize(1240, 840)
+        self.last_output: Path | None = None
+        self._closing = False
+        self.task = TaskRunner(self)
+        self.task.succeeded.connect(self._task_result)
+        self.task.failed.connect(self._show_error)
+        self.task.cancelled.connect(lambda: self.status_label.setText("任务已取消；保留此前的数据。"))
+        self.task.progress.connect(self._on_progress)
+        self.task.busy_changed.connect(self._busy_changed)
+        self.setWindowTitle(APP_NAME)
+        self.resize(1380, 940)
         self.setMinimumSize(900, 600)
-
         self._build_menu()
         self._build_ui()
-        self._apply_theme()
         self._restore_state()
+        self._apply_theme()
+        self._busy_changed(False)
+        QtWidgets.QApplication.instance().styleHints().colorSchemeChanged.connect(self._system_theme_changed)
 
-    # -------------------------------------------------- 菜单
-    def _build_menu(self):
-        bar = self.menuBar()
-        m_file = bar.addMenu("文件")
-        self.act_csv = m_file.addAction("导出 CSV…", self._export_csv)
-        self.act_json = m_file.addAction("导出 JSON…", self._export_json)
-        self.act_report_json = m_file.addAction("导出报告 JSON…", self._export_report_json)
-        self.act_html = m_file.addAction("导出 HTML 报告…", self._export_html)
-        self.act_csv.setShortcut("Ctrl+S")
-        m_file.addSeparator()
-        m_file.addAction("退出", self.close)
+    def _build_menu(self) -> None:
+        file_menu = self.menuBar().addMenu("文件")
+        self.import_action = file_menu.addAction("导入收藏 JSON…", self._import_collection)
+        self.import_action.setShortcut("Ctrl+O")
+        self.export_actions = {}
+        self.export_menu = file_menu.addMenu("导出")
+        for format_name, title in [("csv", "CSV 表格"), ("json", "JSON 收藏快照"),
+                                   ("report-json", "JSON 分析报告"), ("html", "HTML 可视化报告")]:
+            action = self.export_menu.addAction(title + "…")
+            action.triggered.connect(lambda checked=False, kind=format_name: self._export(kind))
+            self.export_actions[format_name] = action
+        self.export_actions["csv"].setShortcut("Ctrl+S")
+        file_menu.addSeparator()
+        file_menu.addAction("退出", self.close).setShortcut("Ctrl+Q")
+        tools = self.menuBar().addMenu("工具")
+        tools.addAction("同步收藏", self._on_fetch).setShortcut("F5")
+        tools.addAction("搜索收藏", self._focus_search).setShortcut("Ctrl+F")
+        tools.addAction("切换亮 / 暗主题", self._toggle_theme).setShortcut("Ctrl+D")
+        self.settings_action = tools.addAction("设置…", self._open_settings)
+        self.settings_action.setShortcut("Ctrl+,")
+        self.cache_action = tools.addAction("清空请求缓存…", self._clear_cache)
+        tools.addAction("运行日志…", self._open_logs)
+        self.menuBar().addMenu("帮助").addAction("关于", self._about)
 
-        m_tools = bar.addMenu("工具")
-        m_tools.addAction("查看 / 清空缓存", self._clear_cache)
-        m_tools.addAction("设置…", self._open_settings)
-        m_tools.addAction("运行日志…", self._open_logs)
-        self.act_theme = m_tools.addAction("切换 暗/亮 主题", self._toggle_theme)
-        self.act_theme.setShortcut("Ctrl+D")
-
-        m_help = bar.addMenu("帮助")
-        m_help.addAction("关于", self._about)
-
-        for a in (self.act_csv, self.act_json, self.act_report_json, self.act_html):
-            a.setEnabled(False)
-
-    # -------------------------------------------------- UI
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         root = QtWidgets.QWidget()
         root.setObjectName("Root")
         self.setCentralWidget(root)
-        outer = QtWidgets.QVBoxLayout(root)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        shell = QtWidgets.QHBoxLayout(root)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        sidebar = QtWidgets.QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setMinimumWidth(180)
+        side = QtWidgets.QVBoxLayout(sidebar)
+        side.setContentsMargins(18, 30, 18, 22)
+        side.setSpacing(8)
+        side.addWidget(label("BANGUMI", "Brand"))
+        side.addWidget(label("C A T C H E R", "SideMuted"))
+        side.addSpacing(34)
+        side.addWidget(label("个人工作台", "SideMuted"))
+        side.addSpacing(4)
+        self.nav_buttons = []
+        self.nav_group = QtWidgets.QButtonGroup(self)
+        for index, (title, _name, glyph) in enumerate(PAGES):
+            button = QtWidgets.QPushButton(f"  {title}")
+            button.setCheckable(True)
+            button.setIconSize(QtCore.QSize(19, 19))
+            button.setIcon(icon(glyph, "#C3D8CD"))
+            self.nav_group.addButton(button, index)
+            self.nav_buttons.append(button)
+            side.addWidget(button)
+        self.nav_group.idClicked.connect(self._navigate)
+        side.addStretch()
+        self.side_user = label("你的收藏，你的节奏。", "SideMuted", True)
+        side.addWidget(self.side_user)
+        side.addSpacing(18)
+        self.settings_button = QtWidgets.QPushButton("  偏好设置")
+        self.settings_button.setIcon(icon("settings", "#C3D8CD"))
+        self.settings_button.clicked.connect(self._open_settings)
+        side.addWidget(self.settings_button)
+        logs_button = QtWidgets.QPushButton("  运行日志")
+        logs_button.setIcon(icon("log", "#C3D8CD"))
+        logs_button.clicked.connect(self._open_logs)
+        side.addWidget(logs_button)
+        side.addSpacing(10)
+        side.addWidget(label(f"v{APP_VERSION}  ·  本地优先 / 只读分析", "SideMuted"))
+        sidebar_scroll = QtWidgets.QScrollArea()
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setFixedWidth(204)
+        sidebar_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        sidebar_scroll.setWidget(sidebar)
+        shell.addWidget(sidebar_scroll)
 
-        # ---- 顶部栏 ----
-        header = QtWidgets.QFrame()
-        header.setObjectName("Header")
-        header.setMinimumHeight(64)
-        hl = QtWidgets.QHBoxLayout(header)
-        hl.setContentsMargins(20, 8, 20, 8)
-        hl.setSpacing(10)
+        workspace = QtWidgets.QWidget()
+        body = QtWidgets.QVBoxLayout(workspace)
+        body.setContentsMargins(28, 24, 28, 18)
+        body.setSpacing(20)
+        heading = QtWidgets.QHBoxLayout()
+        titles = QtWidgets.QVBoxLayout()
+        titles.setSpacing(4)
+        self.breadcrumb = label("WORKSPACE / OVERVIEW", "Eyebrow")
+        self.page_title = label("收藏概览", "PageTitle")
+        titles.addWidget(self.breadcrumb)
+        titles.addWidget(self.page_title)
+        heading.addLayout(titles, 1)
+        self.import_button = QtWidgets.QPushButton("导入")
+        self.import_button.clicked.connect(self._import_collection)
+        heading.addWidget(self.import_button)
+        self.export_button = QtWidgets.QPushButton("导出报告")
+        self.export_button.setMenu(self.export_menu)
+        heading.addWidget(self.export_button)
+        self.theme_button = QtWidgets.QPushButton()
+        self.theme_button.setFixedSize(40, 40)
+        self.theme_button.setToolTip("切换亮 / 暗主题  Ctrl+D")
+        self.theme_button.setAccessibleName("切换亮暗主题")
+        self.theme_button.clicked.connect(self._toggle_theme)
+        heading.addWidget(self.theme_button)
+        body.addLayout(heading)
 
-        title = QtWidgets.QLabel("Bangumi Catcher")
-        title.setObjectName("AppTitle")
-        title.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred)
-        hl.addWidget(title)
-        hl.addSpacing(12)
-
+        fetch_card = Card()
+        fetch_card.body.setContentsMargins(14, 12, 14, 12)
+        fetch_row = QtWidgets.QHBoxLayout()
+        fetch_row.setSpacing(10)
         self.user_input = QtWidgets.QLineEdit()
-        self.user_input.setPlaceholderText("输入 Bangumi 用户 ID / 用户名")
-        self.user_input.setMinimumWidth(180)
-        self.user_input.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.user_input.setPlaceholderText("用户名 / UID / Bangumi 用户主页链接")
+        self.user_input.setAccessibleName("Bangumi 用户")
+        self.user_input.setClearButtonEnabled(True)
         self.user_input.returnPressed.connect(self._on_fetch)
-        hl.addWidget(self.user_input, 1)
-
+        fetch_row.addWidget(self.user_input, 1)
+        self.history_button = QtWidgets.QPushButton("最近")
+        self.history_menu = QtWidgets.QMenu(self.history_button)
+        self.history_button.setMenu(self.history_menu)
+        fetch_row.addWidget(self.history_button)
         self.type_combo = QtWidgets.QComboBox()
-        self.type_combo.addItems(list(TYPE_MAP.keys()))
-        self.type_combo.setMinimumWidth(86)
-        hl.addWidget(self.type_combo)
+        self.type_combo.setAccessibleName("收藏分类")
+        for value, title in SUBJECT_TYPES.items():
+            self.type_combo.addItem(title, value)
+        fetch_row.addWidget(self.type_combo)
+        self.refresh_check = QtWidgets.QCheckBox("跳过缓存")
+        self.refresh_check.setToolTip("忽略收藏缓存，重新从 Bangumi 同步。")
+        fetch_row.addWidget(self.refresh_check)
+        self.fetch_button = QtWidgets.QPushButton("同步收藏")
+        self.fetch_button.setObjectName("Primary")
+        self.fetch_button.clicked.connect(self._on_fetch)
+        fetch_row.addWidget(self.fetch_button)
+        self.cancel_button = QtWidgets.QPushButton("取消任务")
+        self.cancel_button.clicked.connect(self._cancel)
+        fetch_row.addWidget(self.cancel_button)
+        fetch_card.body.addLayout(fetch_row)
+        body.addWidget(fetch_card)
+        self.feedback = label("", "Muted", True)
+        self.feedback.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.feedback.hide()
+        body.addWidget(self.feedback)
+        self.pages = QtWidgets.QStackedWidget()
+        self.overview = OverviewPage()
+        self.library = LibraryPage()
+        self.charts = ChartPage()
+        self.ranking = ReportPage(ranking=True)
+        self.years = ReportPage(ranking=False)
+        for page in (self.overview, self.library, self.charts, self.ranking, self.years):
+            self.pages.addWidget(page)
+        self.overview.library_requested.connect(self._open_library)
+        self.overview.import_requested.connect(self._import_collection)
+        self.overview.fetch_requested.connect(self.user_input.setFocus)
+        self.library.export_requested.connect(lambda kind: self._export(kind, filtered=True))
+        self.library.message.connect(self._message)
+        self.charts.message.connect(self._message)
+        self.charts.runner.busy_changed.connect(self._finish_close_if_idle)
+        body.addWidget(self.pages, 1)
+        shell.addWidget(workspace, 1)
 
-        self.refresh_check = QtWidgets.QCheckBox("强制刷新")
-        hl.addWidget(self.refresh_check)
-
-        self.fetch_btn = QtWidgets.QPushButton("开始抓取")
-        self.fetch_btn.setObjectName("Primary")
-        self.fetch_btn.clicked.connect(self._on_fetch)
-        hl.addWidget(self.fetch_btn)
-
-        self.cancel_btn = QtWidgets.QPushButton("取消")
-        self.cancel_btn.setObjectName("Ghost")
-        self.cancel_btn.clicked.connect(self._on_cancel)
-        self.cancel_btn.setVisible(False)
-        hl.addWidget(self.cancel_btn)
-
-        outer.addWidget(header)
-
-        # ---- 标签页 ----
-        self.tabs = QtWidgets.QTabWidget()
-        outer.addWidget(self.tabs, 1)
-        self._build_tab_overview()
-        self._build_tab_charts()
-        self._build_tab_collection()
-        self._build_tab_ranking()
-        self._build_tab_years()
-        self._set_empty_state(True)
-
-        # ---- 状态栏 ----
-        sb = self.statusBar()
-        self.status_label = QtWidgets.QLabel("就绪")
-        self.status_label.setObjectName("Muted")
+        self.status_label = label("准备就绪 · 输入用户名同步，或导入 JSON 离线使用。", "Muted")
+        self.status_label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.statusBar().addWidget(self.status_label, 1)
+        self.open_output_button = QtWidgets.QPushButton("打开文件 ↗")
+        self.open_output_button.setObjectName("Link")
+        self.open_output_button.hide()
+        self.open_output_button.clicked.connect(self._open_output)
+        self.statusBar().addPermanentWidget(self.open_output_button)
         self.progress = QtWidgets.QProgressBar()
-        self.progress.setFixedWidth(220)
         self.progress.setRange(0, 100)
-        self.progress.setVisible(False)
-        sb.addWidget(self.status_label, 1)
-        sb.addPermanentWidget(self.progress)
+        self.progress.setFixedWidth(160)
+        self.progress.setTextVisible(False)
+        self.statusBar().addPermanentWidget(self.progress)
+        self._navigate(0)
 
-    def _scroll_with_flow(self):
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        inner = QtWidgets.QWidget()
-        inner.setObjectName("FlowPage")
-        flow = FlowLayout(inner, margin=18, h_spacing=16, v_spacing=16)
-        scroll.setWidget(inner)
-        return scroll, flow
+    def _navigate(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        self.nav_buttons[index].setChecked(True)
+        self.page_title.setText(PAGES[index][0])
+        self.breadcrumb.setText(f"WORKSPACE / {PAGES[index][1]}")
+        for position, button in enumerate(self.nav_buttons):
+            button.setIcon(icon(PAGES[position][2], "#173C31" if position == index else "#C3D8CD"))
 
-    def _build_tab_overview(self):
-        self.overview_scroll, self.overview_flow = self._scroll_with_flow()
-        self.tabs.addTab(self.overview_scroll, "概览")
+    def _open_library(self, status=None, text: str = "") -> None:
+        self._navigate(1)
+        self.library.filter_by(status, text)
 
-    def _build_tab_charts(self):
-        self.charts_scroll, self.charts_flow = self._scroll_with_flow()
-        self.tabs.addTab(self.charts_scroll, "图表")
+    def _focus_search(self) -> None:
+        self._navigate(1)
+        self.library.search.setFocus()
+        self.library.search.selectAll()
 
-    def _build_tab_collection(self):
-        page = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(page)
-        v.setContentsMargins(18, 14, 18, 14)
-        v.setSpacing(10)
+    def _apply_theme(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        self.dark = self.theme_preference == "dark" or (
+            self.theme_preference == "system" and app.styleHints().colorScheme() == QtCore.Qt.ColorScheme.Dark)
+        colors = Palette(self.dark)
+        palette = app.palette()
+        for role, color in [(QtGui.QPalette.Window, colors.bg), (QtGui.QPalette.Base, colors.surface),
+                            (QtGui.QPalette.Text, colors.text), (QtGui.QPalette.WindowText, colors.text),
+                            (QtGui.QPalette.Button, colors.surface), (QtGui.QPalette.ButtonText, colors.text),
+                            (QtGui.QPalette.Highlight, colors.accent), (QtGui.QPalette.HighlightedText, colors.on_accent)]:
+            palette.setColor(role, QtGui.QColor(color))
+        app.setPalette(palette)
+        app.setStyleSheet(build_stylesheet(colors))
+        self.theme_button.setIcon(icon("moon", colors.accent))
+        self.import_button.setIcon(icon("import", colors.muted))
+        self.export_button.setIcon(icon("export", colors.muted))
+        self.charts.set_dark(self.dark)
 
-        bar = QtWidgets.QHBoxLayout()
-        self.search_box = QtWidgets.QLineEdit()
-        self.search_box.setObjectName("SearchBox")
-        self.search_box.setPlaceholderText("搜索作品名 / 标签 / 评价")
-        self.search_box.textChanged.connect(self._on_search)
-        bar.addWidget(self.search_box, 1)
-        self.status_filter = QtWidgets.QComboBox()
-        self.status_filter.addItem("全部状态", "")
-        for label in ("想看", "看过", "在看", "搁置", "抛弃"):
-            self.status_filter.addItem(label, label)
-        self.status_filter.currentIndexChanged.connect(self._on_status_filter)
-        bar.addWidget(self.status_filter)
-        self.count_label = QtWidgets.QLabel("")
-        self.count_label.setObjectName("Muted")
-        bar.addWidget(self.count_label)
-        v.addLayout(bar)
-
-        self.table = QtWidgets.QTableView()
-        self.table.setSortingEnabled(True)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.doubleClicked.connect(self._open_subject)
-        self.model = QtGui.QStandardItemModel()
-        self.proxy = SearchProxy(self)
-        self.proxy.setSourceModel(self.model)
-        self.table.setModel(self.proxy)
-        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._show_table_menu)
-        v.addWidget(self.table, 1)
-        self.tabs.addTab(page, "收藏总表")
-
-    def _build_tab_ranking(self):
-        self.ranking_table = QtWidgets.QTableWidget()
-        self.ranking_table.setAlternatingRowColors(True)
-        self.ranking_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.ranking_table.verticalHeader().setVisible(False)
-        wrap = QtWidgets.QWidget()
-        wl = QtWidgets.QVBoxLayout(wrap)
-        wl.setContentsMargins(18, 14, 18, 14)
-        wl.addWidget(self.ranking_table)
-        self.tabs.addTab(wrap, "排行")
-
-    def _build_tab_years(self):
-        self.years_table = QtWidgets.QTableWidget()
-        self.years_table.setAlternatingRowColors(True)
-        self.years_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.years_table.verticalHeader().setVisible(False)
-        wrap = QtWidgets.QWidget()
-        wl = QtWidgets.QVBoxLayout(wrap)
-        wl.setContentsMargins(18, 14, 18, 14)
-        wl.addWidget(self.years_table)
-        self.tabs.addTab(wrap, "年度")
-
-    # -------------------------------------------------- 主题
-    def _apply_theme(self):
-        self.palette_ = Palette(self.dark)
-        QtWidgets.QApplication.instance().setStyleSheet(build_stylesheet(self.palette_))
-
-    def _toggle_theme(self):
-        self.dark = not self.dark
-        self.settings.setValue("dark", self.dark)
+    def _toggle_theme(self) -> None:
+        self.theme_preference = "light" if self.dark else "dark"
+        self.settings.setValue("theme", self.theme_preference)
         self._apply_theme()
-        if self.report is not None:
-            self._render_charts()   # 重建图表以适配主题
 
-    # -------------------------------------------------- 抓取流程
-    def _on_fetch(self):
-        username = self.user_input.text().strip()
-        if not username:
-            QtWidgets.QMessageBox.warning(self, "提示", "请输入 Bangumi 用户 ID")
+    def _system_theme_changed(self, _scheme) -> None:
+        if self.theme_preference == "system":
+            self._apply_theme()
+
+    def _on_fetch(self) -> None:
+        if self.task.busy or self._closing:
             return
-        if self._thread and self._thread.isRunning():
+        try:
+            username = normalize_username(self.user_input.text())
+        except ValueError as exc:
+            self._show_error(str(exc))
+            self.user_input.setFocus()
             return
+        self.user_input.setText(username)
+        config = self.config.model_copy(deep=True)
+        subject_type = self.type_combo.currentData()
+        force_refresh = self.refresh_check.isChecked()
+
+        def fetch(cancel, progress):
+            collection, report = run_cancellable(fetch_and_analyze(
+                config, username, subject_type=subject_type, force_refresh=force_refresh,
+                progress=lambda fraction, message: progress(fraction * 0.94, message),
+                cancel_check=cancel.is_set,
+            ), cancel)
+            progress(1.0, "分析完成")
+            return "data", (collection, report, "同步完成")
+
+        self.task.start(fetch)
+
+    def _import_collection(self) -> None:
+        if self.task.busy or self._closing:
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "导入收藏快照", self.settings.value("import_dir", "", type=str), "收藏 JSON (*.json)")
+        if path:
+            self.import_path(path)
+
+    def import_path(self, path: str) -> bool:
+        if self.task.busy or self._closing:
+            return False
+        config = self.config.model_copy(deep=True)
+        self.settings.setValue("import_dir", str(Path(path).parent))
+
+        def load(cancel, progress):
+            progress(0.1, "读取本地收藏快照 …")
+            collection = load_collection(path)
+            check_cancelled(cancel)
+            progress(0.65, "分析本地收藏 …")
+            report = analyze_user_collection(collection, config)
+            return "data", (collection, report, "离线快照")
+
+        return self.task.start(load)
+
+    def _set_data(self, collection: UserCollection, report: AnalysisReport, source: str) -> None:
+        self.collection, self.report = collection, report
+        self.user_input.setText(collection.username)
+        if collection.subject_type in SUBJECT_TYPES:
+            self.type_combo.setCurrentIndex(self.type_combo.findData(collection.subject_type))
+        self.overview.set_data(collection, report)
+        self.library.set_collection(collection)
+        self.charts.set_report(report)
+        self.ranking.set_report(report)
+        self.years.set_report(report)
+        self.side_user.setText(f"{collection.username}\n{len(collection.items):,} 部作品 · {SUBJECT_TYPES.get(collection.subject_type, '未标注分类')}")
+        self.setWindowTitle(f"{collection.username} — {APP_NAME}")
+        self._message(f"{source} · {len(collection.items):,} 部作品 · 快照时间 {collection.fetched_at[:16].replace('T', ' ')}")
+        self._remember_user(collection.username)
+
+    def _export(self, format_name: str, filtered: bool = False) -> None:
+        if self.collection is None or self.task.busy or self._closing:
+            return
+        collection = self.library.filtered_collection() if filtered else self.collection
+        report = self.report
+        extension = "json" if format_name == "report-json" else format_name
+        stem = "filtered" if filtered else "report" if format_name in {"html", "report-json"} else "collection"
+        folder = self.settings.value("export_dir", self.config.export.output_dir, type=str)
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "导出筛选结果" if filtered else "导出数据", str(Path(folder) / f"{stem}.{extension}"),
+            f"{extension.upper()} (*.{extension})")
+        if not path:
+            return
+        self.settings.setValue("export_dir", str(Path(path).parent))
+        config = self.config.model_copy(deep=True)
+
+        def export(cancel, progress):
+            def update(fraction, message):
+                check_cancelled(cancel)
+                progress(fraction, message)
+
+            return "export", export_dataset(collection, report, path, format_name, config, progress=update)
+
+        self.task.start(export)
+
+    @QtCore.Slot(object)
+    def _task_result(self, result) -> None:
+        if self._closing:
+            return
+        kind, payload = result
+        if kind == "data":
+            self._set_data(*payload)
+        elif kind == "export":
+            self.last_output = payload
+            self.open_output_button.show()
+            self._message(f"导出完成：{payload}")
+        else:
+            self._message(str(payload))
+
+    def _on_progress(self, fraction: float, message: str) -> None:
+        self.progress.setValue(max(0, min(100, round(fraction * 100))))
+        self.status_label.setText(message)
+
+    def _busy_changed(self, busy: bool) -> None:
+        for widget in (self.fetch_button, self.user_input, self.history_button, self.type_combo,
+                       self.refresh_check, self.import_button, self.settings_button):
+            widget.setEnabled(not busy)
+        for action in (self.import_action, self.settings_action, self.cache_action):
+            action.setEnabled(not busy)
+        can_export = self.collection is not None and not busy
+        self.export_button.setEnabled(can_export)
+        self.library.export_button.setEnabled(can_export and self.library.proxy.rowCount() > 0)
+        for action in self.export_actions.values():
+            action.setEnabled(can_export)
+        self.cancel_button.setVisible(busy)
+        self.fetch_button.setVisible(not busy)
+        self.cancel_button.setEnabled(True)
+        self.progress.setVisible(busy)
+        if busy:
+            self.feedback.hide()
+            self.progress.setValue(0)
+            self.status_label.setText("正在准备任务 …")
+        self._finish_close_if_idle()
+
+    def _cancel(self) -> None:
+        self.task.cancel()
+        self.cancel_button.setEnabled(False)
+        self.status_label.setText("正在取消任务 …")
+
+    def _show_error(self, message: str) -> None:
+        self.feedback.setText(f"未能完成操作：{message}")
+        self.feedback.show()
+        self.status_label.setText("操作未完成；已有收藏数据不受影响。")
+
+    def _message(self, message: str) -> None:
+        self.status_label.setText(message)
+        self.status_label.setToolTip(message)
+
+    def _open_output(self) -> None:
+        if self.last_output:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self.last_output.resolve())))
+
+    def _open_settings(self) -> None:
+        if self.task.busy:
+            return
+        dialog = SettingsDialog(self, config=self.config, theme=self.theme_preference)
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
+            self.config = dialog.result_config
+            self.theme_preference = self.config.ui.theme
+            self.settings.setValue("theme", self.theme_preference)
+            self._apply_theme()
+            if self.collection is not None:
+                collection, config = self.collection, self.config.model_copy(deep=True)
+                self.task.start(lambda cancel, progress: (
+                    "data", (collection, analyze_user_collection(collection, config), "设置已应用")))
+
+    def _open_logs(self) -> None:
+        LogDialog(self).exec()
+
+    def _clear_cache(self) -> None:
+        if self.task.busy:
+            return
+        if QtWidgets.QMessageBox.question(self, "清空缓存", "清空所有请求缓存？当前收藏和已导出的文件不会删除。") != QtWidgets.QMessageBox.Yes:
+            return
+        directory = self.config.cache.dir or None
+
+        def clear(cancel, progress):
+            from ..core.cache import Cache
+
+            cache = Cache(directory=directory)
+            try:
+                count = cache.size
+                check_cancelled(cancel)
+                cache.clear()
+                return "message", f"已清空 {count} 条缓存"
+            finally:
+                cache.close()
+
+        self.task.start(clear)
+
+    def _about(self) -> None:
+        QtWidgets.QMessageBox.about(self, APP_NAME, f"{APP_NAME} v{APP_VERSION}\n\n"
+                                   "本地优先的 Bangumi 收藏工作台\n"
+                                   "支持只读同步、离线快照、组合筛选与数据分析。\n\n"
+                                   "本应用不会修改你的 Bangumi 收藏。")
+
+    def _remember_user(self, username: str) -> None:
+        history = self.settings.value("recent_users", self.config.ui.recent_users, type=list)
+        history = list(dict.fromkeys([username, *history]))[:self.config.ui.max_recent_users]
+        self.settings.setValue("recent_users", history)
         self.settings.setValue("last_user", username)
-        subject_type = TYPE_MAP.get(self.type_combo.currentText(), 2)
+        self._update_history(history)
 
-        self.fetch_btn.setEnabled(False)
-        self.cancel_btn.setVisible(True)
-        self.progress.setVisible(True)
-        self.progress.setValue(0)
+    def _update_history(self, history: list[str]) -> None:
+        self.history_menu.clear()
+        for username in history:
+            self.history_menu.addAction(username, lambda value=username: self.user_input.setText(value))
+        if not history:
+            self.history_menu.addAction("还没有历史用户").setEnabled(False)
+        completer = QtWidgets.QCompleter(history, self.user_input)
+        completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+        self.user_input.setCompleter(completer)
 
-        self._thread = QtCore.QThread()
-        self._worker = FetchWorker(username, subject_type, self.refresh_check.isChecked())
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
-        # 收尾链：停事件循环 → 删 worker → 删 thread → 清引用，
-        # 杜绝"线程仍在运行就被销毁"以及反复抓取导致的对象堆积。
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._on_thread_done)
-        self._thread.start()
+    def _restore_state(self) -> None:
+        self.user_input.setText(self.settings.value("last_user", "", type=str))
+        self._update_history(self.settings.value("recent_users", self.config.ui.recent_users, type=list))
+        subject_type = self.settings.value("subject_type", self.config.collection.subject_type, type=int)
+        self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(subject_type)))
+        geometry = self.settings.value("geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
 
-    def _on_thread_done(self):
-        self._thread = None
-        self._worker = None
+    def _finish_close_if_idle(self, *_args) -> None:
+        if self._closing and not self.task.busy and not self.charts.runner.busy:
+            QtCore.QTimer.singleShot(0, self.close)
 
-    def _on_cancel(self):
-        if self._worker:
-            self._worker.cancel()
-            self.status_label.setText("正在取消 …")
-
-    @QtCore.Slot(float, str)
-    def _on_progress(self, frac, msg):
-        self.progress.setValue(int(frac * 100))
-        self.status_label.setText(msg)
-
-    @QtCore.Slot(object, object)
-    def _on_finished(self, collection, report):
-        self.collection = collection
-        self.report = report
-        self._charts_uri = {}  # 重要：新报告必须丢弃旧的 HTML 图表缓存
-        self.search_box.clear()
-        self.status_filter.setCurrentIndex(0)
-        self._reset_controls()
-        self.status_label.setText(
-            f"{report.total_items} 条 · 均分 {report.overall_avg_rating} · "
-            f"完成率 {report.avg_completion}%")
-        for a in (self.act_csv, self.act_json, self.act_report_json, self.act_html):
-            a.setEnabled(True)
-        self._set_empty_state(False)
-        self._render_overview()
-        self._render_charts()
-        self._render_collection()
-        self._render_ranking()
-        self._render_years()
-
-    @QtCore.Slot(str)
-    def _on_failed(self, msg):
-        self._reset_controls()
-        self.status_label.setText(f"失败：{msg}")
-        if msg != "已取消":
-            QtWidgets.QMessageBox.critical(self, "抓取失败", msg)
-
-    def _reset_controls(self):
-        self.fetch_btn.setEnabled(True)
-        self.cancel_btn.setVisible(False)
-        self.progress.setVisible(False)
-        self.progress.setValue(0)
-
-    # -------------------------------------------------- 渲染
-    def _clear_flow(self, flow):
-        while flow.count():
-            item = flow.takeAt(0)
-            w = item.widget()
-            if w:
-                w.setParent(None)
-                w.deleteLater()
-
-    def _set_empty_state(self, empty: bool):
-        if empty and self.overview_flow.count() == 0:
-            tip = QtWidgets.QLabel("输入 Bangumi 用户 ID，点击「开始抓取」开始")
-            tip.setObjectName("Empty")
-            self.overview_flow.addWidget(tip)
-
-    def _render_overview(self):
-        self._clear_flow(self.overview_flow)
-        r = self.report
-        cards = [
-            ("总收藏", r.total_items),
-            ("平均评分", f"{r.overall_avg_rating:.1f}"),
-            ("完成率", f"{r.avg_completion:.0f}%"),
-            ("覆盖年份", len(r.by_year)),
-        ]
-        for tn, cnt in r.type_counts.items():
-            cards.append((tn, cnt))
-        for label, val in cards:
-            self.overview_flow.addWidget(StatCard(val, label))
-
-    def _render_charts(self):
-        self._clear_flow(self.charts_flow)
-        figs = build_figures(self.report, dark=self.dark)
-        self._figs = figs  # keep refs alive
-        for key, title in CHART_TITLES.items():
-            if key in figs:
-                self.charts_flow.addWidget(ChartCard(title, figs[key]))
-
-    def _render_collection(self):
-        self.model.clear()
-        headers = ["作品", "年份", "状态", "我的评分", "全站均分", "进度", "标签"]
-        self.model.setHorizontalHeaderLabels(headers)
-        for it in self.collection.items:
-            name = QtGui.QStandardItem(it.subject_name)
-            # 预拼可搜索文本：作品名 + 标签 + 短评（短评未单独成列，借此也可被搜索到）
-            name.setData(
-                " ".join(filter(None, [it.subject_name, " ".join(it.tags), it.comment])),
-                QtCore.Qt.UserRole,
-            )
-            year = QtGui.QStandardItem()
-            year.setData(it.subject_year or 0, QtCore.Qt.DisplayRole)
-            year.setTextAlignment(QtCore.Qt.AlignCenter)
-            status = QtGui.QStandardItem(it.collection_type_name)
-            status.setData(it.collection_type_name, QtCore.Qt.UserRole)
-            status.setTextAlignment(QtCore.Qt.AlignCenter)
-            myrate = QtGui.QStandardItem()
-            myrate.setData(it.rate or 0, QtCore.Qt.DisplayRole)
-            myrate.setTextAlignment(QtCore.Qt.AlignCenter)
-            bgm = QtGui.QStandardItem()
-            bgm.setData(round(it.subject_score, 1), QtCore.Qt.DisplayRole)
-            bgm.setTextAlignment(QtCore.Qt.AlignCenter)
-            prog = QtGui.QStandardItem(progress_label(it))
-            prog.setTextAlignment(QtCore.Qt.AlignCenter)
-            tags = QtGui.QStandardItem("、".join(it.tags[:5]))
-            self.model.appendRow([name, year, status, myrate, bgm, prog, tags])
-        self.table.setColumnWidth(0, 360)
-        for c in range(1, 6):
-            self.table.setColumnWidth(c, 90)
-        self.table.setColumnWidth(5, 132)  # 进度列文本更长，单独加宽
-        self.count_label.setText(f"共 {self.model.rowCount()} 条")
-
-    def _on_search(self, text):
-        self.proxy.set_needle(text)
-        self._update_count()
-
-    def _on_status_filter(self, _index):
-        status = self.status_filter.currentData() or ""
-        self.proxy.set_status_filter(status)
-        self._update_count()
-
-    def _update_count(self):
-        self.count_label.setText(f"匹配 {self.proxy.rowCount()} / {self.model.rowCount()} 条")
-
-    def _open_subject(self, index):
-        row = self.proxy.mapToSource(index).row()
-        if 0 <= row < len(self.collection.items):
-            sid = self.collection.items[row].subject_id
-            webbrowser.open(f"https://bgm.tv/subject/{sid}")
-
-    def _show_table_menu(self, pos):
-        index = self.table.indexAt(pos)
-        if not index.isValid():
-            return
-        row = self.proxy.mapToSource(index).row()
-        if not (0 <= row < len(self.collection.items)):
-            return
-        item = self.collection.items[row]
-        menu = QtWidgets.QMenu(self)
-        act_open = menu.addAction("在浏览器打开条目")
-        act_copy = menu.addAction("复制条目链接")
-        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if chosen is act_open:
-            webbrowser.open(f"https://bgm.tv/subject/{item.subject_id}")
-        elif chosen is act_copy:
-            QtWidgets.QApplication.clipboard().setText(f"https://bgm.tv/subject/{item.subject_id}")
-            self.status_label.setText("已复制条目链接")
-
-    def _render_ranking(self):
-        r = self.report
-        cols = ["#", "作品", "年份", "我的评分", "全站均分"]
-        self.ranking_table.setColumnCount(len(cols))
-        self.ranking_table.setHorizontalHeaderLabels(cols)
-        self.ranking_table.setRowCount(len(r.top_rated))
-        for i, it in enumerate(r.top_rated):
-            vals = [str(i + 1), it.name_cn or it.name, str(it.year or "-"),
-                    str(it.rate), f"{it.bangumi_score:.1f}" if it.bangumi_score else "-"]
-            for c, val in enumerate(vals):
-                cell = QtWidgets.QTableWidgetItem(val)
-                if c != 1:
-                    cell.setTextAlignment(QtCore.Qt.AlignCenter)
-                self.ranking_table.setItem(i, c, cell)
-        self.ranking_table.horizontalHeader().setStretchLastSection(True)
-        self.ranking_table.setColumnWidth(1, 460)
-
-    def _render_years(self):
-        r = self.report
-        cols = ["年份", "总计", "看过", "在看", "想看", "搁置", "抛弃", "均分"]
-        self.years_table.setColumnCount(len(cols))
-        self.years_table.setHorizontalHeaderLabels(cols)
-        self.years_table.setRowCount(len(r.year_trend))
-        for i, d in enumerate(r.year_trend):
-            vals = [d.year, d.total, d.finished, d.watching, d.wish, d.on_hold, d.dropped,
-                    f"{d.avg_rating:.1f}"]
-            for c, val in enumerate(vals):
-                cell = QtWidgets.QTableWidgetItem(str(val))
-                cell.setTextAlignment(QtCore.Qt.AlignCenter)
-                self.years_table.setItem(i, c, cell)
-        self.years_table.horizontalHeader().setStretchLastSection(True)
-
-    # -------------------------------------------------- 导出
-    def _export_csv(self):
-        if not self.collection:
-            return
-        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出 CSV", "collection.csv", "CSV (*.csv)")
-        if p:
-            collection_to_csv(self.collection, p)
-            self.status_label.setText(f"已导出 CSV：{p}")
-
-    def _export_json(self):
-        if not self.collection:
-            return
-        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出 JSON", "collection.json", "JSON (*.json)")
-        if p:
-            collection_to_json(self.collection, p)
-            self.status_label.setText(f"已导出 JSON：{p}")
-
-    def _export_report_json(self):
-        if not self.report:
-            return
-        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出报告 JSON", "report.json", "JSON (*.json)")
-        if p:
-            report_to_json(self.report, p)
-            self.status_label.setText(f"已导出报告 JSON：{p}")
-
-    def _export_html(self):
-        if not self.report:
-            return
-        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出 HTML 报告", "report.html", "HTML (*.html)")
-        if not p:
-            return
-        from jinja2 import Environment, FileSystemLoader
-        if not self._charts_uri:
-            self._charts_uri = render_all(self.report)
-        env = Environment(
-            loader=FileSystemLoader(str(Path(__file__).resolve().parent.parent / "templates")),
-            autoescape=True)
-        html = env.get_template("report.html.j2").render(report=self.report, charts=self._charts_uri)
-        Path(p).write_text(html, encoding="utf-8")
-        self.status_label.setText(f"已导出 HTML：{p}")
-        if QtWidgets.QMessageBox.question(
-                self, "导出完成", "HTML 报告已保存，是否在浏览器中打开？") == \
-                QtWidgets.QMessageBox.Yes:
-            webbrowser.open(Path(p).resolve().as_uri())
-
-    def _open_settings(self):
-        dialog = SettingsDialog(self)
-        dialog.exec()
-
-    def _open_logs(self):
-        dialog = LogDialog(self)
-        dialog.exec()
-
-    def _clear_cache(self):
-        from ..core.cache import Cache
-        cache_dir = load_config().cache.dir or None
-        c = Cache(directory=cache_dir)
-        count = c.size
-        if count and QtWidgets.QMessageBox.question(
-                self, "清空缓存", f"确定清空 {count} 条本地缓存吗？") != QtWidgets.QMessageBox.Yes:
-            c.close()
-            return
-        c.clear()
-        c.close()
-        self.status_label.setText(f"缓存已清空（{count} 条）")
-
-    def _about(self):
-        QtWidgets.QMessageBox.about(
-            self, "关于 Bangumi Catcher",
-            f"<b>{APP_NAME}</b> v{APP_VERSION}<br><br>"
-            "Bangumi 用户收藏抓取与可视化分析工具<br>"
-            "PySide6 · matplotlib · httpx · pydantic<br><br>"
-            "数据来源：<a href='https://bgm.tv'>Bangumi 番组计划</a>")
-
-    # -------------------------------------------------- 状态持久化
-    def _restore_state(self):
-        last = self.settings.value("last_user", "", type=str)
-        if last:
-            self.user_input.setText(last)
-        geo = self.settings.value("geometry")
-        if geo is not None:
-            self.restoreGeometry(geo)
-
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
-        if self._thread and self._thread.isRunning():
-            if self._worker:
-                self._worker.cancel()
-            self._thread.quit()
-            self._thread.wait(2000)
+        self.settings.setValue("subject_type", self.type_combo.currentData())
+        if self.task.busy or self.charts.runner.busy:
+            self._closing = True
+            self.charts.suspended = True
+            self.task.cancel()
+            self.charts.runner.cancel()
+            self.status_label.setText("正在安全结束后台任务 …")
+            event.ignore()
+            return
         super().closeEvent(event)

@@ -4,7 +4,7 @@
 * 分页并发化：先取首页拿到 total，其余页用有界并发一次性抓取，不再逐页 sleep。
 * 友好错误：404 抛 NotFoundError（"用户不存在/隐私保护"），与限流/服务端错误区分开。
 * 进度回调：fetch_collection 接受 progress(frac, msg)，GUI 据此实时刷新进度条；
-  回调可抛异常以实现"取消"（见 gui.FetchWorker）。
+  回调可抛异常以实现取消；桌面任务同时支持中断在途异步请求。
 * 去除 while-True 翻页，改为按 offset 计算页码，从根本上消除翻页死循环风险。
 """
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -177,6 +178,10 @@ class BangumiClient:
             },
             follow_redirects=True,
             proxy=self.proxy,
+            limits=httpx.Limits(
+                max_connections=self.max_concurrent,
+                max_keepalive_connections=self.max_concurrent,
+            ),
         )
         return self
 
@@ -276,7 +281,7 @@ class BangumiClient:
 
     async def get_subject(self, subject_id: int) -> Subject:
         """获取单条目详情（优先缓存）。"""
-        cached = self._cache.get_subject(subject_id)
+        cached = self._cache.get_subject(subject_id) if self.cache_enabled else None
         if cached is not None:
             try:
                 return Subject(**cached)
@@ -285,7 +290,8 @@ class BangumiClient:
 
         data = await self._request(f"/v0/subjects/{subject_id}")
         subject = _build_subject(data)
-        self._cache.set_subject(subject_id, subject.model_dump())
+        if self.cache_enabled:
+            self._cache.set_subject(subject_id, subject.model_dump())
         return subject
 
     async def _fetch_page(
@@ -300,7 +306,7 @@ class BangumiClient:
         if coll_type is not None:
             params["type"] = coll_type
 
-        page = await self._request(f"/v0/users/{username}/collections", params)
+        page = await self._request(f"/v0/users/{quote(username, safe='')}/collections", params)
         data = page.get("data") or []
         total = page.get("total") or 0
         return data, int(total)
@@ -343,12 +349,16 @@ class BangumiClient:
             if cached is not None:
                 try:
                     logger.info("使用缓存数据 (用户=%s, type=%d)", username, subject_type)
-                    _p(1.0, "已从本地缓存载入")
-                    return UserCollection(**cached)
+                    result = UserCollection(**cached)
+                    result.subject_type = subject_type
                 except Exception:
                     self._cache.delete(
                         self._cache.collection_key(username, subject_type, collection_type)
                     )
+                else:
+                    self._check_cancel()
+                    _p(1.0, "已从本地缓存载入")
+                    return result
 
         # ---------- 首页（拿到 total）----------
         limit = max(1, min(int(limit if limit is not None else self.page_limit), 50))
@@ -379,19 +389,26 @@ class BangumiClient:
                     data, _ = await self._fetch_page(username, subject_type, off, limit, collection_type)
                     return off, data
 
-            tasks = [asyncio.ensure_future(grab(o)) for o in remaining_offsets]
-            try:
-                for fut in asyncio.as_completed(tasks):
-                    off, data = await fut
-                    raw_pages[off] = data
+            offsets = iter(remaining_offsets)
+
+            async def consume_pages() -> None:
+                nonlocal done
+                for offset in offsets:
+                    page_offset, page_data = await grab(offset)
+                    raw_pages[page_offset] = page_data
                     done += 1
                     self._check_cancel()
                     _p(0.15 + 0.40 * done / len(remaining_offsets),
                        f"已获取 {done + 1}/{pages_total} 页")
-            except OperationCancelled:
-                for t in tasks:
-                    t.cancel()
-                raise
+
+            tasks = [asyncio.create_task(consume_pages())
+                     for _ in range(min(self.max_concurrent, len(remaining_offsets)))]
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         # 按 offset 顺序合并 + 去重（防止 total 抖动造成的重叠）
         raw_items = merge_pages(raw_pages)
@@ -400,6 +417,7 @@ class BangumiClient:
         _p(0.58, "整理收藏条目 …")
         items: list[CollectionItem] = []
         for entry in raw_items:
+            self._check_cancel()
             subject_data = entry.get("subject")
             inline_subject = None
             if isinstance(subject_data, dict) and subject_data:
@@ -450,16 +468,24 @@ class BangumiClient:
                                 _p(0.62 + 0.36 * done / len(need_enrich),
                                    f"补全详情 {done}/{len(need_enrich)} …")
 
-                tasks = [asyncio.ensure_future(enrich_one(it)) for it in need_enrich]
+                pending_items = iter(need_enrich)
+
+                async def consume_subjects() -> None:
+                    for item in pending_items:
+                        await enrich_one(item)
+
+                tasks = [asyncio.create_task(consume_subjects())
+                         for _ in range(min(self.max_concurrent, len(need_enrich)))]
                 try:
                     await asyncio.gather(*tasks)
-                except OperationCancelled:
-                    for t in tasks:
-                        t.cancel()
-                    raise
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 self._check_cancel()
 
-        result = UserCollection(username=username, total=len(items), items=items)
+        self._check_cancel()
+        result = UserCollection(username=username, subject_type=subject_type, total=len(items), items=items)
         if self.cache_enabled:
             self._cache.set_collection(
                 username, subject_type, result.model_dump(),

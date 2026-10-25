@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import yaml
 from PySide6 import QtCore, QtWidgets
 
 from .. import __version__
@@ -21,9 +22,14 @@ def main() -> None:
         QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
-    window = MainWindow()
+    try:
+        window = MainWindow()
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        QtWidgets.QMessageBox.critical(None, "无法启动", f"请检查配置文件：{exc}")
+        return
     window.show()
     app.exec()
 

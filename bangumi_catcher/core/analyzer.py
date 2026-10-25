@@ -5,6 +5,7 @@ from __future__ import annotations
 import heapq
 import logging
 from collections import Counter, defaultdict
+from datetime import datetime
 
 from .models import (
     AnalysisReport,
@@ -24,9 +25,11 @@ logger = logging.getLogger(__name__)
 def analyze(
     collection: UserCollection,
     year_start: int = 2000,
-    year_end: int = 2025,
+    year_end: int | None = None,
     top_n: int = 20,
 ) -> AnalysisReport:
+    if year_end is None:
+        year_end = datetime.now().year
     report = AnalysisReport(username=collection.username, total_items=len(collection.items))
     type_counter: Counter[str] = Counter()
     rating_counter: Counter[int] = Counter()

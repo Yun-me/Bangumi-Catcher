@@ -1,32 +1,28 @@
-"""Matplotlib 图表引擎 —— 线程安全、纯 CPU、单一数据源、主题自适应.
+"""Agg 图表引擎：GUI 与 HTML 共用构建器，渲染入口以锁串行化。
 
-每个图表是一个 ``make_*(report, theme) -> Figure`` 构建函数：
-- GUI 把 Figure 直接嵌入 ``FigureCanvasQTAgg``，随窗口实时重绘（非固定 PNG），
-  并根据当前亮/暗主题切换文字与网格配色。
-- HTML 导出调用 ``render_all`` 把同一批 Figure 转成 base64 data-URI（固定浅色，
-  保证在任意浏览器/打印场景下可读）。
-图表样式只此一处定义，GUI 与导出永远一致。
+桌面后台按需生成 PNG；主线程仅显示与缩放图像，不访问 Matplotlib 对象。
+HTML 导出固定使用浅色主题，不依赖 Qt 或浏览器。
 """
 
 from __future__ import annotations
 
 import base64
 import io
+import threading
 from typing import Callable
 
-import matplotlib
-
-# 默认使用 Agg；若 GUI 已初始化 Qt 后端则不覆盖，避免破坏 FigureCanvasQTAgg。
-if "qt" not in matplotlib.get_backend().lower():
-    matplotlib.use("Agg")
 import matplotlib.font_manager as fm
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
 from ..core.models import AnalysisReport
+from .chart_catalog import CHART_TITLES as CHART_TITLES
+
+_RENDER_LOCK = threading.RLock()
 
 # 分类色板（亮/暗通用，均经过对比度校验）
-PALETTE = ["#4C8BF5", "#1FB6A6", "#F5A623", "#E2506B", "#8B6CEF", "#22A8C0", "#E07B39"]
-ACCENT, ACCENT2 = "#4C8BF5", "#1FB6A6"
+PALETTE = ["#219D83", "#6291D5", "#E7B35C", "#D87988", "#9482C3", "#52ABB9", "#CE8654"]
+ACCENT, ACCENT2 = "#219D83", "#6291D5"
 
 # 主题相关：仅文字/网格/分隔线随主题切换，数据色保持一致便于跨主题对照
 LIGHT = {"text": "#2C2E33", "muted": "#8A929E", "grid": "#E6E8EB",
@@ -268,40 +264,33 @@ FIGURE_BUILDERS: dict[str, Callable[..., Figure]] = {
 }
 
 # GUI 标签页展示顺序与标题（无装饰性 emoji，保持克制）
-CHART_TITLES: dict[str, str] = {
-    "rating_distribution": "评分分布",
-    "type_distribution": "收藏状态",
-    "yearly_trend": "年度趋势",
-    "yearly_rating": "年度均分",
-    "type_trend": "状态构成",
-    "season_distribution": "季度分布",
-    "top_tags": "热门标签",
-    "rating_compare": "评分对比",
-    "top_rated": "最爱排行",
-}
-
-
 def build_figures(report: AnalysisReport, dark: bool = False) -> dict[str, Figure]:
     """为 GUI 构建全部 Figure（按当前主题着色，可直接塞进 FigureCanvasQTAgg）。"""
     th = DARK if dark else LIGHT
     return {key: builder(report, th) for key, builder in FIGURE_BUILDERS.items()}
 
 
-def _fig_to_uri(fg: Figure) -> str:
-    b = io.BytesIO()
-    fg.savefig(b, format="png", bbox_inches="tight", facecolor="white", dpi=110)
-    b.seek(0)
-    return "data:image/png;base64," + base64.b64encode(b.read()).decode()
+def render_chart(report: AnalysisReport, key: str, dark: bool = False) -> bytes:
+    with _RENDER_LOCK:
+        figure = FIGURE_BUILDERS[key](report, DARK if dark else LIGHT)
+        try:
+            FigureCanvasAgg(figure)
+            output = io.BytesIO()
+            figure.savefig(output, format="png", bbox_inches="tight",
+                           facecolor="#1C2425" if dark else "#FFFFFF", dpi=160)
+            return output.getvalue()
+        finally:
+            figure.clear()
 
 
 def render_all(report: AnalysisReport,
                progress: Callable[[float, str], None] | None = None) -> dict[str, str]:
     """为 HTML 导出生成全部图表 base64 data-URI（固定浅色），返回 {模板key: uri}。"""
     out: dict[str, str] = {}
-    items = list(FIGURE_BUILDERS.items())
+    items = list(FIGURE_BUILDERS)
     n = len(items)
-    for i, (key, builder) in enumerate(items):
-        out[key] = _fig_to_uri(builder(report, LIGHT))
+    for i, key in enumerate(items):
+        out[key] = "data:image/png;base64," + base64.b64encode(render_chart(report, key)).decode()
         if progress:
             progress((i + 1) / n, f"渲染图表 {key}")
     return out

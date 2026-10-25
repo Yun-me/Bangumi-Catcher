@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bangumi-catcher"
-version = "2.0.0"
-description = "Bangumi 用户收藏批量抓取与数据分析 —— 桌面 GUI + CLI 工具"
+version = "3.0.0"
+description = "本地优先的 Bangumi 收藏工作台：在线同步、离线探索与可视化分析"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Bangumi Catcher Contributors" }]

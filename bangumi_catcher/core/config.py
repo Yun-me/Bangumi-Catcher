@@ -6,9 +6,12 @@ v2.0 起配置从裸 dict 升级为 Pydantic 模型，所有调用方获得类�
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -22,12 +25,22 @@ _EXTERNAL_PATHS = [
 _ENV_PREFIX = "BANGUMI_"
 
 
+def user_config_path() -> Path:
+    if sys.platform == "win32":
+        root = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return root / "bangumi-catcher" / "config.yaml"
+
+
 class ApiConfig(BaseModel):
     base_url: str = "https://api.bgm.tv"
     user_agent: str = "bangumi-catcher (https://github.com/Yun-me/Bangumi-Catcher)"
-    timeout: float = 30.0
-    max_retries: int = 3
-    retry_delay: float = 1.0
+    timeout: float = Field(default=30.0, gt=0)
+    max_retries: int = Field(default=3, ge=1, le=10)
+    retry_delay: float = Field(default=1.0, ge=0)
     proxy: str | None = None
 
     @field_validator("base_url", mode="before")
@@ -47,7 +60,7 @@ class CollectionConfig(BaseModel):
     subject_type: int = 2
     limit: int = 50
     max_concurrent: int = 8
-    rate_limit_delay: float = 0.0
+    rate_limit_delay: float = Field(default=0.0, ge=0)
 
     @field_validator("subject_type", mode="before")
     @classmethod
@@ -71,7 +84,7 @@ class CollectionConfig(BaseModel):
 
 class CacheConfig(BaseModel):
     enabled: bool = True
-    ttl: int = 3600
+    ttl: int = Field(default=3600, ge=0)
     dir: str = ""
 
     @field_validator("enabled", mode="before")
@@ -87,7 +100,7 @@ class CacheConfig(BaseModel):
 class AnalysisConfig(BaseModel):
     year_start: int = 2000
     year_end: int = Field(default_factory=lambda: datetime.now().year)
-    top_n: int = 20
+    top_n: int = Field(default=20, ge=1, le=1000)
 
 
 class ExportConfig(BaseModel):
@@ -97,9 +110,9 @@ class ExportConfig(BaseModel):
 
 
 class UiConfig(BaseModel):
-    theme: str = "system"  # light / dark / system
+    theme: Literal["system", "light", "dark"] = "system"
     recent_users: list[str] = Field(default_factory=list)
-    max_recent_users: int = 8
+    max_recent_users: int = Field(default=8, ge=1, le=50)
 
 
 class AppConfig(BaseModel):
@@ -168,23 +181,26 @@ def load_config(
     config_path: str | None = None,
     overrides: dict[str, Any] | None = None,
 ) -> AppConfig:
-    """加载配置：内嵌默认 → 外部 YAML（可选）→ CLI 覆盖 → 环境变量。"""
+    """加载默认、项目与用户配置；显式路径替代默认搜索，环境变量最后覆盖。"""
     cfg = _default_dict()
 
-    external_file: Path | None = None
+    external_files: list[Path] = []
     if config_path:
-        p = Path(config_path).expanduser()
-        if p.exists():
-            external_file = p
+        external_files.append(Path(config_path).expanduser())
     else:
-        for p in _EXTERNAL_PATHS:
-            if p.exists():
-                external_file = p
+        for path in _EXTERNAL_PATHS:
+            if path.exists():
+                external_files.append(path)
                 break
+        personal = user_config_path()
+        if personal.exists():
+            external_files.append(personal)
 
-    if external_file is not None:
+    for external_file in external_files:
         with open(external_file, encoding="utf-8") as f:
             user_cfg = yaml.safe_load(f) or {}
+        if not isinstance(user_cfg, dict):
+            raise ValueError(f"配置文件必须是 YAML 对象：{external_file}")
         cfg = _deep_merge(cfg, user_cfg)
 
     _apply_overrides(cfg, overrides)
@@ -197,20 +213,32 @@ def save_config(cfg: AppConfig, config_path: str | Path) -> Path:
     path = Path(config_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = cfg.model_dump(mode="json")
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    descriptor, temporary = tempfile.mkstemp(prefix=".config-", suffix=".yaml", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(data, stream, allow_unicode=True, sort_keys=False)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     return path
 
 
 def validate_config(cfg: AppConfig) -> list[str]:
     """返回配置问题列表；空列表表示配置可用。"""
     issues: list[str] = []
-    if not cfg.api.base_url:
-        issues.append("api.base_url 为空")
+    parsed_url = urlparse(cfg.api.base_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+        issues.append("api.base_url 必须是有效的 HTTP / HTTPS 地址")
+    if cfg.api.proxy:
+        proxy = urlparse(cfg.api.proxy)
+        if proxy.scheme not in {"http", "https"} or not proxy.hostname:
+            issues.append("api.proxy 必须是 HTTP / HTTPS 代理地址")
     if cfg.collection.subject_type not in (1, 2, 3, 4, 6):
         issues.append(f"collection.subject_type 无效: {cfg.collection.subject_type}")
     if cfg.collection.limit < 1 or cfg.collection.limit > 50:
         issues.append(f"collection.limit 应在 1~50 之间: {cfg.collection.limit}")
     if cfg.analysis.top_n < 1:
         issues.append(f"analysis.top_n 必须为正数: {cfg.analysis.top_n}")
+    if cfg.analysis.year_start > cfg.analysis.year_end:
+        issues.append("统计起始年份不能晚于结束年份")
     return issues

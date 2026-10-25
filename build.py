@@ -11,6 +11,7 @@
 * 关闭 UPX（避免被杀软误报）。
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -19,13 +20,13 @@ ROOT = Path(__file__).resolve().parent
 SEP = os.pathsep
 
 
-def build():
+def build(onefile: bool = False):
     import PyInstaller.__main__ as pyi
 
     args = [
         str(ROOT / "run.py"),
         "--name", "BangumiCatcher",
-        "--onefile",
+        "--onefile" if onefile else "--onedir",
         "--windowed",
         "--noupx",
         "--noconfirm",
@@ -52,9 +53,12 @@ def build():
 
     print("Building BangumiCatcher ...")
     pyi.run(args)
-    out = ROOT / "dist" / ("BangumiCatcher.exe" if sys.platform == "win32" else "BangumiCatcher")
+    folder = ROOT / "dist" if onefile else ROOT / "dist" / "BangumiCatcher"
+    out = folder / ("BangumiCatcher.exe" if sys.platform == "win32" else "BangumiCatcher")
     print(f"\nDone -> {out}")
 
 
 if __name__ == "__main__":
-    build()
+    parser = argparse.ArgumentParser(description="默认目录打包；避免每次启动解压依赖。")
+    parser.add_argument("--onefile", action="store_true", help="生成单文件版本（启动时需要解压）")
+    build(onefile=parser.parse_args().onefile)

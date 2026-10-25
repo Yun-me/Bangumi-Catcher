@@ -5,28 +5,33 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ report.username }} · Bangumi 收藏分析</title>
 <style>
-:root{--bg:#F6F7F9;--card:#fff;--ink:#1F2329;--muted:#8A929E;--accent:#3B7DF0;--border:#E8EAED}
+:root{--bg:#F4F7F5;--card:#fff;--ink:#223B33;--muted:#667B72;--accent:#178365;--border:#E0E9E4}
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
-header{background:var(--card);border-bottom:1px solid var(--border);padding:32px 32px 24px}
-header h1{margin:0 0 6px;font-size:22px;font-weight:600}
-header p{margin:0;color:var(--muted);font-size:13px}
+header{background:#173C31;color:#fff;padding:40px 32px 32px}
+header h1{margin:12px 0;font-size:28px;font-weight:700}
+header p{margin:0;color:#D4E6DD;font-size:13px;line-height:1.8}
+header .brand{font-size:11px;letter-spacing:2px}
+a{color:var(--accent)}
 .stats{display:flex;gap:14px;flex-wrap:wrap;padding:22px 32px}
-.stat{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px 20px;flex:1;min-width:140px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 20px;flex:1;min-width:140px}
 .stat .n{font-size:25px;font-weight:700}
 .stat .l{color:var(--muted);font-size:13px;margin-top:4px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:18px;padding:6px 32px 40px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;break-inside:avoid}
 .card h3{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--ink)}
 .card img{max-width:100%;height:auto;border-radius:4px}
 footer{text-align:center;color:var(--muted);padding:24px;font-size:13px}
 @media(max-width:640px){.stats{padding:16px;gap:10px}.grid{padding:6px 16px 24px;grid-template-columns:1fr}header{padding:24px 20px}}
+@media print{body{background:#fff}header{background:#fff;color:var(--ink);padding:16px}header p{color:var(--muted)}.grid{grid-template-columns:1fr;padding:0}.stats{padding:16px 0}.card{margin-bottom:12px}footer{padding:12px}}
 </style>
 </head>
 <body>
 <header>
+  <p class="brand">BANGUMI CATCHER / COLLECTION REPORT</p>
   <h1>{{ report.username }} 的收藏分析</h1>
   <p>生成于 {{ report.generated_at[:19] }} · {{ report.total_items }} 条收藏 · 平均评分 {{ report.overall_avg_rating }}</p>
+  <p>均分仅统计已看过且已评分的作品；年度图表按作品发行年份统计。此报告可离线浏览与打印。</p>
 </header>
 
 <div class="stats">
@@ -35,6 +40,7 @@ footer{text-align:center;color:var(--muted);padding:24px;font-size:13px}
   <div class="stat"><div class="n">{{ cnt }}</div><div class="l">{{ tn }}</div></div>
   {% endfor %}
   <div class="stat"><div class="n">{{ report.overall_avg_rating }}</div><div class="l">平均评分</div></div>
+  <div class="stat"><div class="n">{{ report.avg_completion }}%</div><div class="l">看过与在看的平均完成率</div></div>
 </div>
 
 <div class="grid">
@@ -57,13 +63,13 @@ footer{text-align:center;color:var(--muted);padding:24px;font-size:13px}
   <div class="card"><h3>追番季度分布</h3><img src="{{ charts.season_distribution }}" alt="季度分布"></div>
   {% endif %}
   {% if charts.top_tags %}
-  <div class="card"><h3>热门标签 Top 15</h3><img src="{{ charts.top_tags }}" alt="热门标签"></div>
+  <div class="card"><h3>热门标签</h3><img src="{{ charts.top_tags }}" alt="热门标签"></div>
   {% endif %}
   {% if charts.rating_compare %}
   <div class="card"><h3>我的评分 vs 全站均分</h3><img src="{{ charts.rating_compare }}" alt="评分对比"></div>
   {% endif %}
   {% if charts.top_rated %}
-  <div class="card"><h3>我的最爱 Top 15</h3><img src="{{ charts.top_rated }}" alt="最爱排行"></div>
+  <div class="card"><h3>我的最爱</h3><img src="{{ charts.top_rated }}" alt="最爱排行"></div>
   {% endif %}
 </div>
 

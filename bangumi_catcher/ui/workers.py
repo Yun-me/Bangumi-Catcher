@@ -1,65 +1,81 @@
-"""后台任务 Worker —— 负责在 QThread 中执行抓取与分析。"""
+"""Owned background jobs with explicit lifetime and cooperative cancellation."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
+from typing import Callable
 
 from PySide6 import QtCore
 
-from ..core.config import load_config
 from ..core.exceptions import OperationCancelled
-from ..services.fetch_service import fetch_and_analyze
+from ..services.task_service import check_cancelled
 
 logger = logging.getLogger(__name__)
+Operation = Callable[[threading.Event, Callable[[float, str], None]], object]
 
 
-class FetchWorker(QtCore.QObject):
-    progress = QtCore.Signal(float, str)
-    finished = QtCore.Signal(object, object)  # (UserCollection, AnalysisReport)
+class TaskWorker(QtCore.QThread):
+    succeeded = QtCore.Signal(object)
     failed = QtCore.Signal(str)
+    cancelled = QtCore.Signal()
+    progress = QtCore.Signal(float, str)
 
-    def __init__(self, username: str, subject_type: int, force_refresh: bool):
-        super().__init__()
-        self.username = username
-        self.subject_type = subject_type
-        self.force_refresh = force_refresh
-        self._cancel = threading.Event()
+    def __init__(self, operation: Operation, parent=None):
+        super().__init__(parent)
+        self.operation = operation
+        self.cancel_event = threading.Event()
 
     def cancel(self) -> None:
-        self._cancel.set()
+        self.cancel_event.set()
 
-    @QtCore.Slot()
     def run(self) -> None:
         try:
-            cfg = load_config()
-
-            def progress(frac: float, msg: str) -> None:
-                if self._cancel.is_set():
-                    raise OperationCancelled("已取消")
-                self.progress.emit(float(frac), str(msg))
-
-            # 抓取自身 0-1 进度映射到整体 2%~70%，分析占 70%~100%。
-            def fetch_progress(frac: float, msg: str) -> None:
-                progress(0.02 + 0.68 * frac, msg)
-
-            async def _run():
-                return await fetch_and_analyze(
-                    cfg,
-                    self.username,
-                    subject_type=self.subject_type,
-                    force_refresh=self.force_refresh,
-                    progress=fetch_progress,
-                    cancel_check=self._cancel.is_set,
-                )
-
-            progress(0.02, "连接 Bangumi API …")
-            collection, report = asyncio.run(_run())
-            progress(1.0, "完成")
-            self.finished.emit(collection, report)
+            check_cancelled(self.cancel_event)
+            result = self.operation(self.cancel_event, self.progress.emit)
+            check_cancelled(self.cancel_event)
+            self.succeeded.emit(result)
         except OperationCancelled:
-            self.failed.emit("已取消")
-        except Exception as e:  # noqa: BLE001
-            logger.exception("抓取失败")
-            self.failed.emit(str(e))
+            self.cancelled.emit()
+        except Exception as exc:
+            logger.exception("后台任务失败")
+            self.failed.emit(str(exc))
+
+
+class TaskRunner(QtCore.QObject):
+    succeeded = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+    cancelled = QtCore.Signal()
+    progress = QtCore.Signal(float, str)
+    busy_changed = QtCore.Signal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.worker: TaskWorker | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self.worker is not None
+
+    def start(self, operation: Operation) -> bool:
+        if self.busy:
+            return False
+        self.worker = TaskWorker(operation, self)
+        self.worker.succeeded.connect(self.succeeded)
+        self.worker.failed.connect(self.failed)
+        self.worker.cancelled.connect(self.cancelled)
+        self.worker.progress.connect(self.progress)
+        self.worker.finished.connect(self._finished)
+        self.busy_changed.emit(True)
+        self.worker.start()
+        return True
+
+    def cancel(self) -> None:
+        if self.worker:
+            self.worker.cancel()
+
+    @QtCore.Slot()
+    def _finished(self) -> None:
+        worker, self.worker = self.worker, None
+        worker.deleteLater()
+        self.busy_changed.emit(False)

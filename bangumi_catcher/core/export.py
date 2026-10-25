@@ -12,6 +12,12 @@ from .models import AnalysisReport, UserCollection
 logger = logging.getLogger(__name__)
 
 
+def _spreadsheet_text(value: str) -> str:
+    if value.lstrip().startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n")):
+        return "'" + value
+    return value
+
+
 def _ensure_dir(path: str) -> Path:
     p = Path(path).parent
     p.mkdir(parents=True, exist_ok=True)
@@ -32,7 +38,7 @@ def collection_to_csv(
 
     fieldnames = [
         "subject_id", "name", "name_cn", "year", "collection_type",
-        "rate", "ep_status", "comment", "bangumi_score", "rank", "updated_at",
+        "rate", "ep_status", "comment", "bangumi_score", "rank", "updated_at", "tags", "vol_status",
     ]
 
     with open(output_path, "w", newline="", encoding=encoding) as f:
@@ -42,16 +48,18 @@ def collection_to_csv(
         for item in collection.items:
             writer.writerow({
                 "subject_id": item.subject_id,
-                "name": item.subject.name if item.subject else item.name,
-                "name_cn": item.subject.name_cn if item.subject else "",
+                "name": _spreadsheet_text(item.subject.name if item.subject else item.name),
+                "name_cn": _spreadsheet_text(item.subject.name_cn if item.subject else ""),
                 "year": item.subject_year or "",
                 "collection_type": item.collection_type_name,
                 "rate": item.rate,
                 "ep_status": item.ep_status,
-                "comment": item.comment,
+                "comment": _spreadsheet_text(item.comment),
                 "bangumi_score": item.subject_score,
-                "rank": item.subject.rank if item.subject else "",
-                "updated_at": item.updated_at,
+                "rank": (item.subject.rating.rank if item.subject.rating else item.subject.rank) if item.subject else "",
+                "updated_at": _spreadsheet_text(item.updated_at),
+                "tags": _spreadsheet_text(" / ".join(item.tags)),
+                "vol_status": item.vol_status,
             })
 
     logger.info("CSV 已导出: %s (%d 条)", output_path, len(collection.items))
