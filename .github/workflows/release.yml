@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: distributions
           path: dist/
@@ -60,7 +60,7 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/BangumiCatcher/* -DestinationPath dist/BangumiCatcher-windows.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-bundle
           path: dist/BangumiCatcher-windows.zip
